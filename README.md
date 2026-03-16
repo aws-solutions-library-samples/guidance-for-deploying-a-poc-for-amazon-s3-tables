@@ -59,10 +59,10 @@ The CloudFormation template deploys the following architecture:
 │                        VPC                              │
 │  ┌───────────────────────────────────────────────────┐  │
 │  │              Public Subnet                        │  │
-│  │  ┌─────────────┐                                  │  │
+│  │  ┌─────────────-┐                                 │  │
 │  │  │  EC2 Instance│ ◄── Spark / AWS CLI access      │  │
-│  │  │  (Test Host) │     point for PoC testing        │  │
-│  │  └──────┬──────┘                                  │  │
+│  │  │  (Test Host) │     point for PoC testing       │  │
+│  │  └──────┬─────-─┘                                 │  │
 │  └─────────┼─────────────────────────────────────────┘  │
 │            │                                            │
 └────────────┼────────────────────────────────────────────┘
