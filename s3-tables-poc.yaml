@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: "(SO9XXX) - Guidance for Deploying a PoC for Amazon S3 Tables. Template deploys a VPC, EC2 instance, S3 table bucket, Athena workgroup, and required IAM roles."
+Description: "(SO9XXX) - Guidance for Deploying a PoC for Amazon S3 Tables. Template deploys a VPC with private subnet (VPC endpoints, no NAT Gateway), EC2 instance (SSM access), S3 table bucket, Athena workgroup, and required IAM roles."
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -7,9 +7,7 @@ Metadata:
       - Label:
           default: EC2 Configuration
         Parameters:
-          - KeyPairName
           - InstanceType
-          - AllowedSSHCidr
       - Label:
           default: S3 Tables Configuration
         Parameters:
@@ -17,21 +15,11 @@ Metadata:
           - DefaultNamespace
 
 Parameters:
-  KeyPairName:
-    Type: AWS::EC2::KeyPair::KeyName
-    Description: Name of an existing EC2 key pair for SSH access.
-
   InstanceType:
     Type: String
     Default: t3.xlarge
     AllowedValues: [t3.large, t3.xlarge, t3.2xlarge, m5.xlarge, m5.2xlarge]
     Description: EC2 instance type for the test host.
-
-  AllowedSSHCidr:
-    Type: String
-    Default: 0.0.0.0/0
-    Description: CIDR block allowed for SSH access. Restrict to your IP (e.g., 203.0.113.10/32).
-    AllowedPattern: '(\d{1,3}\.){3}\d{1,3}/\d{1,2}'
 
   TableBucketName:
     Type: String
@@ -58,69 +46,147 @@ Resources:
         - Key: Name
           Value: !Sub "${AWS::StackName}-vpc"
 
-  InternetGateway:
-    Type: AWS::EC2::InternetGateway
-    Properties:
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-igw"
-
-  AttachGateway:
-    Type: AWS::EC2::VPCGatewayAttachment
-    Properties:
-      VpcId: !Ref VPC
-      InternetGatewayId: !Ref InternetGateway
-
-  PublicSubnet:
+  PrivateSubnet:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      CidrBlock: 10.0.1.0/24
-      MapPublicIpOnLaunch: true
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: false
       AvailabilityZone: !Select [0, !GetAZs '']
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-public-subnet"
+          Value: !Sub "${AWS::StackName}-private-subnet"
 
-  PublicRouteTable:
+  PrivateRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-public-rt"
+          Value: !Sub "${AWS::StackName}-private-rt"
 
-  PublicRoute:
-    Type: AWS::EC2::Route
-    DependsOn: AttachGateway
-    Properties:
-      RouteTableId: !Ref PublicRouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref InternetGateway
-
-  SubnetRouteTableAssociation:
+  PrivateSubnetRouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId: !Ref PublicSubnet
-      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  # ============ VPC ENDPOINTS ============
+
+  # Gateway endpoint for S3 (free)
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref PrivateRouteTable
+
+  # Interface endpoints for SSM Session Manager
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for VPC interface endpoints
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.0.0.0/16
+          Description: HTTPS from VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-endpoint-sg"
+
+  SSMEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssm"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  SSMMessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssmmessages"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  EC2MessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ec2messages"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  # Interface endpoint for S3 Tables API
+  S3TablesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3tables"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  # Interface endpoint for Glue
+  GlueEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.glue"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  # Interface endpoint for Athena
+  AthenaEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.athena"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
 
   # ============ SECURITY ============
 
   EC2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Security group for S3 Tables PoC EC2 instance
+      GroupDescription: Security group for S3 Tables PoC EC2 instance (no inbound, SSM only)
       VpcId: !Ref VPC
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 22
-          ToPort: 22
-          CidrIp: !Ref AllowedSSHCidr
-          Description: SSH access
       SecurityGroupEgress:
-        - IpProtocol: -1
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
           CidrIp: 0.0.0.0/0
-          Description: Allow all outbound
+          Description: HTTPS to AWS services via VPC endpoints and S3 gateway
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-ec2-sg"
@@ -167,6 +233,8 @@ Resources:
                   - glue:GetTables
                   - glue:GetPartitions
                   - glue:BatchGetPartition
+                  - glue:GetCatalog
+                  - glue:GetCatalogs
                 Resource: "*"
               - Sid: AthenaAccess
                 Effect: Allow
@@ -188,7 +256,7 @@ Resources:
       Roles:
         - !Ref EC2Role
 
-  # ============ S3 (Athena Results) ============
+  # ============ S3 (Athena Results + Spark Staging) ============
 
   AthenaResultsBucket:
     Type: AWS::S3::Bucket
@@ -214,6 +282,29 @@ Resources:
     Properties:
       TableBucketName: !Sub "${TableBucketName}-${AWS::AccountId}"
 
+  # ============ SAGEMAKER LAKEHOUSE INTEGRATION ============
+
+  S3TablesCatalog:
+    Type: AWS::Glue::Catalog
+    DependsOn: S3TableBucket
+    Properties:
+      Name: s3tablescatalog
+      CatalogInput:
+        FederatedCatalog:
+          Identifier: !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/*"
+          ConnectionName: "aws:s3tables"
+        CreateDatabaseDefaultPermissions:
+          - Principal:
+              DataLakePrincipalIdentifier: IAM_ALLOWED_PRINCIPALS
+            Permissions:
+              - ALL
+        CreateTableDefaultPermissions:
+          - Principal:
+              DataLakePrincipalIdentifier: IAM_ALLOWED_PRINCIPALS
+            Permissions:
+              - ALL
+        AllowFullTableExternalDataAccess: "True"
+
   # ============ ATHENA ============
 
   AthenaWorkgroup:
@@ -232,10 +323,14 @@ Resources:
 
   EC2Instance:
     Type: AWS::EC2::Instance
+    DependsOn:
+      - S3GatewayEndpoint
+      - SSMEndpoint
+      - SSMMessagesEndpoint
+      - EC2MessagesEndpoint
     Properties:
       InstanceType: !Ref InstanceType
-      KeyName: !Ref KeyPairName
-      SubnetId: !Ref PublicSubnet
+      SubnetId: !Ref PrivateSubnet
       SecurityGroupIds:
         - !Ref EC2SecurityGroup
       IamInstanceProfile: !Ref EC2InstanceProfile
@@ -248,34 +343,24 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash -xe
-          yum update -y
-          yum install -y java-17-amazon-corretto python3-pip
-          pip3 install awscli --upgrade
-
-          # Install Apache Spark for local testing
-          cd /opt
-          wget -q https://archive.apache.org/dist/spark/spark-3.5.1/spark-3.5.1-bin-hadoop3.tgz
-          tar xzf spark-3.5.1-bin-hadoop3.tgz
-          ln -s spark-3.5.1-bin-hadoop3 spark
-
-          echo 'export SPARK_HOME=/opt/spark' >> /etc/profile.d/spark.sh
-          echo 'export PATH=$SPARK_HOME/bin:$PATH' >> /etc/profile.d/spark.sh
-          echo 'export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto' >> /etc/profile.d/spark.sh
+          # Note: yum repos and Spark tarball must be pre-staged in S3
+          # since this instance has no internet access (VPC endpoints only).
+          # Java 17 and SSM agent are included in the AL2023 AMI.
 
           # Signal completion
-          echo "S3 Tables PoC instance setup complete" > /tmp/setup-complete.txt
+          echo "S3 Tables PoC instance ready (install Spark via S3 staging)" > /tmp/setup-complete.txt
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-test-host"
 
 Outputs:
-  EC2PublicIP:
-    Description: Public IP of the EC2 test host
-    Value: !GetAtt EC2Instance.PublicIp
-
   EC2InstanceId:
-    Description: EC2 Instance ID
+    Description: EC2 Instance ID (use with SSM Session Manager to connect)
     Value: !Ref EC2Instance
+
+  SSMSessionCommand:
+    Description: AWS CLI command to connect to the EC2 instance via Session Manager
+    Value: !Sub "aws ssm start-session --target ${EC2Instance} --region ${AWS::Region}"
 
   TableBucketARN:
     Description: ARN of the S3 table bucket
@@ -290,21 +375,13 @@ Outputs:
     Value: !Ref AthenaWorkgroup
 
   AthenaResultsBucketName:
-    Description: S3 bucket for Athena query results
+    Description: S3 bucket for Athena query results (also used for Spark staging)
     Value: !Ref AthenaResultsBucket
 
   DefaultNamespace:
     Description: Default namespace for tables
     Value: !Ref DefaultNamespace
 
-  SSHCommand:
-    Description: SSH command to connect to the EC2 instance
-    Value: !Sub "ssh -i <your-key>.pem ec2-user@${EC2Instance.PublicIp}"
-
   Region:
     Description: Deployment Region
     Value: !Ref AWS::Region
-
-  PublicSubnetId:
-    Description: Public subnet ID (use for optional EMR cluster in Scenario 4b)
-    Value: !Ref PublicSubnet
