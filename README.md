@@ -23,7 +23,7 @@ Using this Guidance, you can quickly deploy a PoC environment that allows you to
 
 - Create and manage S3 table buckets and namespaces
 - Ingest data into Apache Iceberg tables (V2 and V3) on S3 Tables
-- Query tables using Amazon Athena, Amazon EMR, or Apache Spark
+- Query tables using Amazon Athena, Amazon EMR Serverless, or Apache Spark
 - Evaluate automated table maintenance (compaction, snapshot expiry, unreferenced file removal, record expiration)
 - Test sort order and z-order compaction strategies
 - Test integration with AWS analytics services via Amazon SageMaker Lakehouse
@@ -34,7 +34,7 @@ Using this Guidance, you can quickly deploy a PoC environment that allows you to
 - Data lake analytics with Apache Iceberg
 - Streaming data ingestion and analytics
 - Data warehouse offloading to open table formats
-- Multi-engine analytics (Athena, Redshift, EMR, Spark)
+- Multi-engine analytics (Athena, Redshift, EMR Serverless, Spark)
 
 ### AWS Services Deployed
 
@@ -58,13 +58,18 @@ The CloudFormation template deploys the following architecture:
 ┌─────────────────────────────────────────────────────────┐
 │                        VPC                              │
 │  ┌───────────────────────────────────────────────────┐  │
-│  │              Public Subnet                        │  │
-│  │  ┌─────────────-┐                                 │  │
-│  │  │  EC2 Instance│ ◄── Spark / AWS CLI access      │  │
-│  │  │  (Test Host) │     point for PoC testing       │  │
-│  │  └──────┬─────-─┘                                 │  │
+│  │              Private Subnet                       │  │
+│  │  ┌─────────────┐                                  │  │
+│  │  │  EC2 Instance│ ◄── SSM Session Manager         │  │
+│  │  │  (Test Host) │     (no public IP, no SSH)       │  │
+│  │  └──────┬──────┘                                  │  │
 │  └─────────┼─────────────────────────────────────────┘  │
 │            │                                            │
+│  ┌─────────┴─────────────────────────────────────────┐  │
+│  │  VPC Endpoints                                    │  │
+│  │  S3 (Gateway) · S3 Tables · SSM · SSM Messages   │  │
+│  │  EC2 Messages · Glue · Athena                     │  │
+│  └───────────────────────────────────────────────────┘  │
 └────────────┼────────────────────────────────────────────┘
              │
              ▼
@@ -81,11 +86,12 @@ The CloudFormation template deploys the following architecture:
                               └──────────────────────┘
 ```
 
-1. An EC2 instance is deployed in a public subnet as the primary access point for PoC testing (Spark sessions, AWS CLI operations).
-2. An S3 table bucket is created with a default namespace for organizing Iceberg tables.
-3. The table bucket is integrated with AWS Glue Data Catalog via SageMaker Lakehouse for unified access.
-4. Amazon Athena is configured with a dedicated workgroup and S3 results bucket for serverless SQL queries.
-5. IAM roles provide least-privilege access to S3 Tables, Glue, Athena, and Lake Formation.
+1. An EC2 instance is deployed in a **private subnet** with no public IP. Access is via AWS Systems Manager Session Manager.
+2. **VPC endpoints** provide private connectivity to AWS services (S3, S3 Tables, SSM, Glue, Athena) — no NAT Gateway or internet gateway required.
+3. An S3 table bucket is created with a default namespace for organizing Iceberg tables.
+4. The table bucket is integrated with AWS Glue Data Catalog via SageMaker Lakehouse for unified access.
+5. Amazon Athena is configured with a dedicated workgroup and S3 results bucket for serverless SQL queries.
+6. IAM roles provide least-privilege access to S3 Tables, Glue, Athena, and Lake Formation.
 
 ---
 
@@ -98,7 +104,8 @@ You are responsible for the cost of the AWS services used while running this PoC
 | Amazon S3 Tables | ~$0.50–$2.00 | Storage + PUT/GET requests |
 | Amazon Athena | ~$0–$5.00 | $5 per TB scanned |
 | Amazon EC2 (t3.xlarge) | ~$4.00 | On-demand pricing |
-| Amazon EMR (optional) | ~$6.50 | 2x m5.xlarge, only if running Scenario 4b |
+| VPC Interface Endpoints (6) | ~$1.50 | $0.01/hr per endpoint per AZ |
+| Amazon EMR Serverless (optional) | ~$1–3 | Pay-per-use, only if running Scenario 4b |
 | AWS Glue Data Catalog | ~$0.00 | Free tier covers most PoC usage |
 
 > **Tip:** Stop or terminate the EC2 instance when not actively testing to minimize costs.
@@ -108,8 +115,8 @@ You are responsible for the cost of the AWS services used while running this PoC
 ## Prerequisites
 
 - An AWS account with permissions to create IAM roles, VPCs, EC2 instances, S3 table buckets, Athena workgroups, and Glue resources.
-- An EC2 key pair in the target Region for SSH access.
-- AWS CLI v2 installed locally (for deployment).
+- AWS CLI v2 installed locally (for deployment and SSM Session Manager access).
+- The [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) installed for your AWS CLI.
 - Familiarity with SQL and Apache Iceberg concepts is helpful but not required.
 
 ### Supported Regions
@@ -157,7 +164,20 @@ As of March 2026, Amazon S3 Tables is available in the following AWS Regions. Fo
 
 ## Deployment Steps
 
-### Step 1: Deploy the CloudFormation Stack
+### Step 1: Stage the Spark Binary in S3
+
+The EC2 instance runs in a private subnet with no internet access. Stage the Spark tarball in the Athena results bucket before deploying (or after, then install manually via SSM):
+
+```bash
+# Download Spark locally and upload to S3
+curl -O https://archive.apache.org/dist/spark/spark-3.5.1/spark-3.5.1-bin-hadoop3.tgz
+
+aws s3 cp spark-3.5.1-bin-hadoop3.tgz \
+  s3://s3-tables-poc-athena-results-<AccountId>/staging/spark-3.5.1-bin-hadoop3.tgz \
+  --region us-east-1
+```
+
+### Step 2: Deploy the CloudFormation Stack
 
 Deploy using the AWS CLI:
 
@@ -166,19 +186,15 @@ aws cloudformation deploy \
   --template-file s3-tables-poc.yaml \
   --stack-name s3-tables-poc \
   --capabilities CAPABILITY_NAMED_IAM \
-  --parameter-overrides \
-    KeyPairName=<your-key-pair> \
-    AllowedSSHCidr=<your-ip>/32 \
   --region us-east-1
 ```
 
 Or deploy via the AWS Console:
 1. Navigate to **CloudFormation** → **Create stack** → **With new resources**.
 2. Upload `s3-tables-poc.yaml`.
-3. Provide your EC2 key pair name and SSH CIDR.
-4. Acknowledge IAM resource creation and deploy.
+3. Acknowledge IAM resource creation and deploy.
 
-### Step 2: Retrieve Stack Outputs
+### Step 3: Retrieve Stack Outputs
 
 ```bash
 aws cloudformation describe-stacks \
@@ -189,88 +205,60 @@ aws cloudformation describe-stacks \
 ```
 
 Key outputs:
-- `EC2PublicIP` — SSH access point
+- `EC2InstanceId` — Instance ID for SSM Session Manager
+- `SSMSessionCommand` — Ready-to-use CLI command to connect
 - `TableBucketARN` — Your S3 table bucket ARN
 - `AthenaWorkgroupName` — Athena workgroup for queries
 - `TableBucketName` — Table bucket name
 
-### Step 3: Connect to the EC2 Instance
+### Step 3b: Verify SageMaker Lakehouse Integration
+
+The CloudFormation template automatically creates the `s3tablescatalog` federated catalog in AWS Glue Data Catalog, integrating your S3 table bucket with AWS analytics services. Verify the integration:
 
 ```bash
-ssh -i <your-key>.pem ec2-user@<EC2PublicIP>
+# Confirm the s3tablescatalog exists
+aws glue get-catalog --catalog-id s3tablescatalog --region us-east-1
+
+# List databases (table buckets) visible through the catalog
+aws glue get-databases \
+  --catalog-id s3tablescatalog \
+  --region us-east-1
 ```
 
-### Step 4: Create a Table and Insert Data via AWS CLI
+You should see your table bucket listed as a database. Once you create namespaces and tables (Step 6), they will automatically appear in the Glue Data Catalog and be queryable from Athena, Redshift, EMR, and other integrated services.
 
-From the EC2 instance:
+> **Note:** The integration uses IAM access controls by default. All table names and column names must be **lowercase** to be visible through the integration. If you need fine-grained column-level or row-level access control, configure Lake Formation grants via the [Lake Formation console](https://console.aws.amazon.com/lakeformation/).
+
+### Step 4: Connect to the EC2 Instance via Session Manager
 
 ```bash
-# List your table bucket
+aws ssm start-session --target <EC2InstanceId> --region us-east-1
+```
+
+> **Note:** The EC2 instance runs in a private subnet with no public IP. Access is provided securely through AWS Systems Manager Session Manager — no SSH keys, no open inbound ports. Ensure the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) is installed on your local machine.
+
+### Step 5: Install Spark from S3
+
+Once connected via SSM, install Spark from the staged S3 artifact:
+
+```bash
+sudo yum install -y java-17-amazon-corretto
+aws s3 cp s3://<AthenaResultsBucket>/staging/spark-3.5.1-bin-hadoop3.tgz /opt/
+cd /opt && sudo tar xzf spark-3.5.1-bin-hadoop3.tgz && sudo ln -s spark-3.5.1-bin-hadoop3 spark
+export SPARK_HOME=/opt/spark
+export PATH=$SPARK_HOME/bin:$PATH
+export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto
+```
+
+### Step 6: Verify Environment and Begin Testing
+
+Confirm the EC2 instance can reach your S3 table bucket:
+
+```bash
 aws s3tables list-table-buckets --region us-east-1
-
-# Create a namespace
-aws s3tables create-namespace \
-  --table-bucket-arn <TableBucketARN> \
-  --namespace poc_data \
-  --region us-east-1
-
-# Create a table
-aws s3tables create-table \
-  --table-bucket-arn <TableBucketARN> \
-  --namespace poc_data \
-  --name sensor_readings \
-  --format ICEBERG \
-  --region us-east-1
 ```
 
-### Step 5: Query Tables with Amazon Athena
-
-1. Open the **Athena** console.
-2. Select the workgroup created by the stack (e.g., `s3-tables-poc-workgroup`).
-3. In the Data Source panel, select the AWS Glue Data Catalog — your table bucket and namespace should appear.
-4. Run queries:
-
-```sql
--- List tables in your namespace
-SHOW TABLES IN poc_data;
-
--- Insert sample data
-INSERT INTO poc_data.sensor_readings
-VALUES
-  (1, 'sensor-a', 23.5, current_timestamp),
-  (2, 'sensor-b', 18.2, current_timestamp),
-  (3, 'sensor-a', 24.1, current_timestamp);
-
--- Query data
-SELECT * FROM poc_data.sensor_readings
-WHERE sensor_id = 'sensor-a';
-
--- Time travel query (Iceberg snapshot)
-SELECT * FROM poc_data.sensor_readings
-FOR TIMESTAMP AS OF TIMESTAMP '2026-03-15 00:00:00';
-```
-
-### Step 6 (Optional): Query with Spark on EC2
-
-From the EC2 instance, launch a Spark shell connected to your table bucket:
-
-```bash
-spark-shell \
-  --packages software.amazon.s3tables:s3-tables-catalog-for-iceberg-runtime:0.1.8 \
-  --conf spark.sql.catalog.s3tablesbucket=org.apache.iceberg.spark.SparkCatalog \
-  --conf spark.sql.catalog.s3tablesbucket.catalog-impl=software.amazon.s3tables.iceberg.S3TablesCatalog \
-  --conf spark.sql.catalog.s3tablesbucket.warehouse=<TableBucketARN> \
-  --conf spark.sql.defaultCatalog=s3tablesbucket \
-  --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
-```
-
-Then run Spark SQL:
-
-```scala
-spark.sql("SHOW NAMESPACES").show()
-spark.sql("SHOW TABLES IN poc_data").show()
-spark.sql("SELECT * FROM poc_data.sensor_readings").show()
-```
+You should see your table bucket in the output. Your environment is now ready — proceed to the [Test Scenarios](#test-scenarios) section to begin PoC testing. Start with **Scenario 1: Basic Table Operations**, which walks through creating namespaces, tables, inserting data, querying via Athena, and more.
 
 ---
 
@@ -302,7 +290,119 @@ Use the following matrix to define and track your PoC success criteria:
 
 ### Scenario 1: Basic Table Operations
 
-Test creating namespaces, tables, inserting data, and querying via Athena. Validates core functionality.
+Validates core CRUD functionality: creating namespaces, tables, inserting data, updating, deleting, and querying.
+
+**1a. Create a namespace and table (AWS CLI via SSM session):**
+
+```bash
+# Create a namespace
+aws s3tables create-namespace \
+  --table-bucket-arn <TableBucketARN> \
+  --namespace poc_data \
+  --region us-east-1
+
+# Create a table
+aws s3tables create-table \
+  --table-bucket-arn <TableBucketARN> \
+  --namespace poc_data \
+  --name sensor_readings \
+  --format ICEBERG \
+  --region us-east-1
+
+# Verify the table exists
+aws s3tables get-table \
+  --table-bucket-arn <TableBucketARN> \
+  --namespace poc_data \
+  --name sensor_readings \
+  --region us-east-1
+
+# List all tables in the namespace
+aws s3tables list-tables \
+  --table-bucket-arn <TableBucketARN> \
+  --namespace poc_data \
+  --region us-east-1
+```
+
+**1b. Open Athena and connect to your table bucket:**
+
+1. Open the **Athena** console.
+2. Select the workgroup created by the stack (e.g., `s3-tables-poc-workgroup`).
+3. In the Data Source panel, select the AWS Glue Data Catalog. Your table bucket should appear under the `s3tablescatalog` federated catalog (set up automatically by the CloudFormation template in Step 3b).
+
+**1c. Define the table schema and insert data (Athena):**
+
+```sql
+-- Add columns to the table via Athena
+-- (S3 Tables creates a schemaless Iceberg table; define columns on first use)
+CREATE TABLE IF NOT EXISTS poc_data.sensor_readings (
+  id INT,
+  sensor_id STRING,
+  temperature DOUBLE,
+  reading_time TIMESTAMP
+)
+LOCATION '<TableBucketARN>/poc_data/sensor_readings';
+
+-- Insert sample data
+INSERT INTO poc_data.sensor_readings VALUES
+  (1, 'sensor-a', 23.5, TIMESTAMP '2026-03-16 10:00:00'),
+  (2, 'sensor-b', 18.2, TIMESTAMP '2026-03-16 10:05:00'),
+  (3, 'sensor-a', 24.1, TIMESTAMP '2026-03-16 10:10:00'),
+  (4, 'sensor-c', 19.8, TIMESTAMP '2026-03-16 10:15:00'),
+  (5, 'sensor-b', 17.9, TIMESTAMP '2026-03-16 10:20:00');
+```
+
+**1d. Query data:**
+
+```sql
+-- Select all rows
+SELECT * FROM poc_data.sensor_readings;
+
+-- Filtered query
+SELECT * FROM poc_data.sensor_readings
+WHERE sensor_id = 'sensor-a';
+
+-- Aggregation
+SELECT sensor_id, COUNT(*) AS readings, AVG(temperature) AS avg_temp
+FROM poc_data.sensor_readings
+GROUP BY sensor_id;
+```
+
+**1e. Update and delete rows:**
+
+```sql
+-- Update a row (Iceberg merge-on-read)
+UPDATE poc_data.sensor_readings
+SET temperature = 25.0
+WHERE id = 1;
+
+-- Delete a row
+DELETE FROM poc_data.sensor_readings
+WHERE id = 5;
+
+-- Verify changes
+SELECT * FROM poc_data.sensor_readings ORDER BY id;
+```
+
+**1f. Time travel — query a previous snapshot:**
+
+```sql
+-- View table snapshots
+SELECT * FROM poc_data."sensor_readings$snapshots";
+
+-- Query data as of a specific snapshot
+SELECT * FROM poc_data.sensor_readings
+FOR TIMESTAMP AS OF TIMESTAMP '2026-03-16 10:00:00';
+```
+
+**1g. Clean up test table (optional):**
+
+```bash
+aws s3tables delete-table \
+  --table-bucket-arn <TableBucketARN> \
+  --namespace poc_data \
+  --name sensor_readings \
+  --region us-east-1
+```
 
 ### Scenario 2: Schema Evolution
 
@@ -318,22 +418,14 @@ VALUES (4, 'sensor-c', 19.8, current_timestamp, 'building-a');
 SELECT * FROM poc_data.sensor_readings;
 ```
 
-### Scenario 3: Automated Table Maintenance
+### Scenario 3: Automated Table Maintenance and Sort Compaction
 
-S3 Tables automatically performs compaction, snapshot expiry, and unreferenced file removal. To observe this:
+S3 Tables automatically performs compaction (binpack and sort), snapshot expiry, and unreferenced file removal. This scenario creates a sort-ordered table, generates many small files, and uses Iceberg metadata tables to observe the maintenance state — without waiting hours for compaction to complete.
 
-1. Insert data in multiple small batches (creates many small files).
-2. Wait for automated compaction (typically runs within hours).
-3. Check that file count is reduced and query performance improves.
-4. Monitor compaction activity via CloudWatch metrics.
-
-### Scenario 3b: Sort Order Compaction
-
-Define a sort order on a table to enable automatic sort compaction for predictable query patterns:
+**3a. Create a table with a sort order:**
 
 ```sql
--- Create a table with a sort order defined
-CREATE TABLE poc_data.sorted_readings (
+CREATE TABLE poc_data.maintenance_test (
   id INT,
   sensor_id STRING,
   temperature DOUBLE,
@@ -345,62 +437,172 @@ PARTITIONED BY (days(reading_time))
 TBLPROPERTIES (
   'write.target-file-size-bytes' = '536870912'
 );
-
--- Insert data — S3 Tables will automatically sort-compact
--- based on the defined sort order
-INSERT INTO poc_data.sorted_readings VALUES
-  (1, 'sensor-a', 23.5, current_timestamp, 'building-a'),
-  (2, 'sensor-b', 18.2, current_timestamp, 'building-b');
 ```
+
+**3b. Record the initial state (should be empty):**
+
+```sql
+SELECT COUNT(*) AS file_count, COALESCE(SUM(record_count), 0) AS total_records
+FROM poc_data."maintenance_test$files";
+```
+
+**3c. Insert data in 10 individual batches to create many small files:**
+
+Each INSERT creates at least one new data file. Run these individually:
+
+```sql
+INSERT INTO poc_data.maintenance_test VALUES (1, 'sensor-c', 22.0, TIMESTAMP '2026-03-17 01:00:00', 'building-b');
+INSERT INTO poc_data.maintenance_test VALUES (2, 'sensor-a', 19.5, TIMESTAMP '2026-03-17 02:00:00', 'building-a');
+INSERT INTO poc_data.maintenance_test VALUES (3, 'sensor-b', 24.1, TIMESTAMP '2026-03-17 03:00:00', 'building-c');
+INSERT INTO poc_data.maintenance_test VALUES (4, 'sensor-a', 20.3, TIMESTAMP '2026-03-17 04:00:00', 'building-a');
+INSERT INTO poc_data.maintenance_test VALUES (5, 'sensor-c', 21.8, TIMESTAMP '2026-03-17 05:00:00', 'building-b');
+INSERT INTO poc_data.maintenance_test VALUES (6, 'sensor-b', 23.7, TIMESTAMP '2026-03-17 06:00:00', 'building-c');
+INSERT INTO poc_data.maintenance_test VALUES (7, 'sensor-a', 18.9, TIMESTAMP '2026-03-17 07:00:00', 'building-a');
+INSERT INTO poc_data.maintenance_test VALUES (8, 'sensor-c', 22.5, TIMESTAMP '2026-03-17 08:00:00', 'building-b');
+INSERT INTO poc_data.maintenance_test VALUES (9, 'sensor-b', 25.0, TIMESTAMP '2026-03-17 09:00:00', 'building-c');
+INSERT INTO poc_data.maintenance_test VALUES (10, 'sensor-a', 20.1, TIMESTAMP '2026-03-17 10:00:00', 'building-a');
+```
+
+**3d. Verify many small files were created:**
+
+```sql
+-- Should show ~10 files (one per INSERT)
+SELECT COUNT(*) AS file_count,
+       SUM(record_count) AS total_records,
+       AVG(file_size_in_bytes) AS avg_file_bytes
+FROM poc_data."maintenance_test$files";
+```
+
+**3e. Record baseline query performance:**
+
+Run a filtered query and note the "Data scanned" value shown in Athena query results:
+
+```sql
+SELECT * FROM poc_data.maintenance_test WHERE sensor_id = 'sensor-a';
+```
+
+**3f. Check snapshots created by each insert:**
+
+```sql
+-- Each INSERT created a snapshot — should show ~10 snapshots
+SELECT snapshot_id, committed_at, operation, summary
+FROM poc_data."maintenance_test$snapshots"
+ORDER BY committed_at DESC;
+```
+
+**3g. Observe maintenance over time:**
+
+S3 Tables runs compaction and snapshot expiry as background processes. Rather than waiting, set up a monitoring query you can re-run periodically (e.g., every 30 minutes):
+
+```sql
+-- Maintenance dashboard query — run periodically to observe changes
+SELECT
+  'files' AS metric, COUNT(*) AS value FROM poc_data."maintenance_test$files"
+UNION ALL
+SELECT
+  'snapshots', COUNT(*) FROM poc_data."maintenance_test$snapshots"
+UNION ALL
+SELECT
+  'total_records', SUM(record_count) FROM poc_data."maintenance_test$files"
+UNION ALL
+SELECT
+  'avg_file_bytes', AVG(file_size_in_bytes) FROM poc_data."maintenance_test$files";
+```
+
+Over time you should observe:
+- **File count decreasing** — small files merged into larger ones (compaction)
+- **Average file size increasing** — compacted files are closer to the 512 MB target
+- **Snapshot count decreasing** — old snapshots expired (default: max 120 hours age)
+- **Total records unchanged** — compaction reorganizes files, not data
+
+**3h. Re-run the filtered query after compaction:**
+
+```sql
+-- Compare "Data scanned" with the baseline from step 3e
+SELECT * FROM poc_data.maintenance_test WHERE sensor_id = 'sensor-a';
+```
+
+After sort compaction, data is physically sorted by the sort columns. Queries filtering on `sensor_id` skip irrelevant data ranges, resulting in less data scanned and faster execution.
+
+**3i. Monitor via CloudWatch:**
+
+In the AWS Console, navigate to **CloudWatch** → **Metrics** → **S3 Tables** to view:
+- `CompactionSuccessCount` — successful compaction runs
+- `CompactionBytesCompacted` — bytes processed
+- `CompactionFilesCompacted` — files merged
+
+> **Tip:** The maintenance dashboard query in step 3g gives you immediate visibility without waiting. Run it a few times over the course of your PoC to see the progression. The improvement in "Data scanned" is more pronounced with larger datasets.
 
 ### Scenario 3c: Intelligent-Tiering
 
-Enable Intelligent-Tiering on a table to automatically reduce storage costs on infrequently accessed data:
+S3 Tables Intelligent-Tiering automatically moves infrequently accessed data to cheaper storage tiers. Since tier transitions take 30–90 days, this scenario focuses on verifying the configuration and projecting cost savings.
 
-- Data not accessed for 30 days moves to Infrequent Access tier (~40% cheaper)
-- Data not accessed for 90 days moves to Archive Instant Access tier (~68% cheaper)
+**3c-1. Check if Intelligent-Tiering is enabled on your table bucket:**
 
-This is configured at the table bucket level and is ideal for tables with mixed access patterns.
+```bash
+aws s3tables get-table-bucket \
+  --table-bucket-arn <TableBucketARN> \
+  --region us-east-1
+```
+
+**3c-2. Check current storage class of your table's data files:**
+
+```sql
+-- View file details including size
+SELECT file_path, file_size_in_bytes, record_count
+FROM poc_data."maintenance_test$files";
+
+-- Total storage used
+SELECT COUNT(*) AS file_count,
+       SUM(file_size_in_bytes) AS total_bytes,
+       SUM(file_size_in_bytes) / 1073741824.0 AS total_gb
+FROM poc_data."maintenance_test$files";
+```
+
+**3c-3. Project cost savings based on your data volume:**
+
+Use the output from step 3c-2 to calculate projected monthly savings. Replace `TOTAL_GB` with your actual value:
+
+| Tier | Transition | Price/GB-month | Monthly Cost (1 TB example) | Savings vs. Standard |
+|---|---|---|---|---|
+| S3 Tables Standard | Immediate | $0.0265 | $27.14 | — |
+| Infrequent Access | After 30 days | ~$0.0159 | ~$16.28 | ~40% |
+| Archive Instant Access | After 90 days | ~$0.0085 | ~$8.70 | ~68% |
+
+For your PoC data:
+```
+Standard cost:        TOTAL_GB × $0.0265 = $X.XX/month
+After 30 days (IA):   TOTAL_GB × $0.0159 = $X.XX/month (40% savings)
+After 90 days (AIA):  TOTAL_GB × $0.0085 = $X.XX/month (68% savings)
+```
+
+**3c-4. Verify monitoring is in place:**
+
+In the AWS Console, navigate to **CloudWatch** → **Metrics** → **S3** to confirm storage metrics are being collected for your table bucket. These metrics will track tier transitions over time.
+
+> **Note:** Intelligent-Tiering transitions are automatic and cannot be accelerated. For a short-lived PoC, the key validation is confirming the feature is enabled (3c-1) and understanding the projected savings (3c-3). For long-running evaluations, re-run step 3c-2 after 30+ days to observe actual tier transitions.
 
 ### Scenario 4: Multi-Engine Access
 
-1. Insert data via Athena.
-2. Query the same data via Spark on EC2.
-3. Verify data consistency across engines.
+Validates that data written by one engine is immediately readable by another, confirming Iceberg's multi-engine consistency guarantees on S3 Tables.
 
-### Scenario 4b: Query with Amazon EMR
+**4a. Insert data via Athena:**
 
-Test querying S3 Tables from an EMR cluster with Apache Spark.
+```sql
+INSERT INTO poc_data.sensor_readings VALUES
+  (200, 'sensor-m', 26.3, TIMESTAMP '2026-03-18 12:00:00'),
+  (201, 'sensor-n', 15.7, TIMESTAMP '2026-03-18 12:05:00'),
+  (202, 'sensor-m', 27.1, TIMESTAMP '2026-03-18 12:10:00');
 
-1. Create an EMR cluster with Iceberg enabled:
-
-```bash
-# Create configurations.json
-cat > /tmp/configurations.json << 'EOF'
-[{
-  "Classification": "iceberg-defaults",
-  "Properties": {"iceberg.enabled": "true"}
-}]
-EOF
-
-# Create the cluster
-aws emr create-cluster \
-  --release-label emr-7.5.0 \
-  --applications Name=Spark \
-  --configurations file:///tmp/configurations.json \
-  --region us-east-1 \
-  --name S3-Tables-PoC-Cluster \
-  --log-uri s3://<AthenaResultsBucket>/emr-logs/ \
-  --instance-type m5.xlarge \
-  --instance-count 2 \
-  --service-role EMR_DefaultRole \
-  --ec2-attributes \
-    InstanceProfile=EMR_EC2_DefaultRole,SubnetId=<PublicSubnetId>,KeyName=<your-key-pair>
+-- Confirm the rows exist
+SELECT COUNT(*) AS total_rows FROM poc_data.sensor_readings;
 ```
 
-> **Note:** Ensure `EMR_DefaultRole` and `EMR_EC2_DefaultRole` exist in your account. If not, create them with `aws emr create-default-roles`. Attach the `AmazonS3TablesFullAccess` policy to `EMR_EC2_DefaultRole`.
+Note the `total_rows` value.
 
-2. SSH into the EMR primary node and launch a Spark shell connected to your table bucket:
+**4b. Query the same data via Spark on EC2:**
+
+Connect to the EC2 instance via SSM (Step 4), ensure Spark is installed (Step 5), then launch a Spark shell:
 
 ```bash
 spark-shell \
@@ -412,19 +614,203 @@ spark-shell \
   --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
 ```
 
-3. Query the same tables you created via Athena:
+**4c. Verify row count matches Athena:**
 
 ```scala
-spark.sql("SELECT * FROM poc_data.sensor_readings").show()
-spark.sql("SELECT sensor_id, avg(temperature) FROM poc_data.sensor_readings GROUP BY sensor_id").show()
+// Total row count — should match the Athena count from step 4a
+spark.sql("SELECT COUNT(*) AS total_rows FROM poc_data.sensor_readings").show()
+
+// Verify the specific rows inserted via Athena are visible
+spark.sql("SELECT * FROM poc_data.sensor_readings WHERE id IN (200, 201, 202)").show()
 ```
 
-4. Verify data consistency — results should match Athena queries exactly.
+**4d. Insert data via Spark and verify in Athena:**
 
-5. When done, terminate the EMR cluster to avoid ongoing charges:
+```scala
+// Insert a row from Spark
+spark.sql("""
+  INSERT INTO poc_data.sensor_readings VALUES
+    (203, 'sensor-p', 18.4, TIMESTAMP '2026-03-18 12:15:00')
+""")
+```
+
+Switch back to the Athena console and run:
+
+```sql
+-- The row inserted by Spark should be immediately visible
+SELECT * FROM poc_data.sensor_readings WHERE id = 203;
+
+-- Total count should be one more than before
+SELECT COUNT(*) AS total_rows FROM poc_data.sensor_readings;
+```
+
+**Expected outcome:** Row counts and data match exactly across both engines. Rows inserted by Athena are visible in Spark and vice versa, with no delay or inconsistency. This confirms S3 Tables' Iceberg catalog provides a consistent view across query engines.
+
+### Scenario 4b: Query with Amazon EMR Serverless
+
+Test querying S3 Tables from an EMR Serverless application with Apache Spark. All CLI commands in this scenario are run from your **local machine** (not the EC2 instance), since EMR Serverless is a fully managed service.
+
+**4b-1. Create an IAM role for EMR Serverless:**
 
 ```bash
-aws emr terminate-clusters --cluster-ids <ClusterId> --region us-east-1
+# Create the trust policy
+cat > /tmp/emr-serverless-trust.json << 'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "emr-serverless.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+
+# Create the role
+aws iam create-role \
+  --role-name s3-tables-poc-emr-serverless \
+  --assume-role-policy-document file:///tmp/emr-serverless-trust.json
+
+# Attach S3 Tables access
+aws iam attach-role-policy \
+  --role-name s3-tables-poc-emr-serverless \
+  --policy-arn arn:aws:iam::aws:policy/AmazonS3TablesFullAccess
+
+# Attach S3 access (for scripts and logs bucket)
+aws iam put-role-policy \
+  --role-name s3-tables-poc-emr-serverless \
+  --policy-name S3Access \
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": ["s3:GetObject", "s3:PutObject", "s3:ListBucket"],
+        "Resource": ["arn:aws:s3:::<AthenaResultsBucket>", "arn:aws:s3:::<AthenaResultsBucket>/*"]
+      }
+    ]
+  }'
+
+# Note the role ARN from the output — you'll need it in step 4b-4
+```
+
+Replace `<AthenaResultsBucket>` with the bucket name from your stack outputs.
+
+**4b-2. Create an EMR Serverless application:**
+
+```bash
+aws emr-serverless create-application \
+  --release-label emr-7.5.0 \
+  --type SPARK \
+  --name s3-tables-poc \
+  --region us-east-1
+```
+
+Note the `applicationId` from the output.
+
+**4b-3. Create and upload a PySpark script:**
+
+```bash
+cat > /tmp/s3tables_query.py << 'EOF'
+from pyspark.sql import SparkSession
+
+spark = SparkSession.builder \
+    .config("spark.sql.catalog.s3tablesbucket", "org.apache.iceberg.spark.SparkCatalog") \
+    .config("spark.sql.catalog.s3tablesbucket.catalog-impl", "software.amazon.s3tables.iceberg.S3TablesCatalog") \
+    .config("spark.sql.catalog.s3tablesbucket.warehouse", "<TableBucketARN>") \
+    .config("spark.sql.defaultCatalog", "s3tablesbucket") \
+    .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \
+    .getOrCreate()
+
+spark.sql("SHOW NAMESPACES").show()
+spark.sql("SHOW TABLES IN poc_data").show()
+spark.sql("SELECT * FROM poc_data.sensor_readings").show()
+spark.sql("SELECT sensor_id, avg(temperature) FROM poc_data.sensor_readings GROUP BY sensor_id").show()
+
+spark.stop()
+EOF
+
+# Replace <TableBucketARN> in the script with your actual ARN
+sed -i 's|<TableBucketARN>|YOUR_ACTUAL_TABLE_BUCKET_ARN|' /tmp/s3tables_query.py
+
+# Upload to S3
+aws s3 cp /tmp/s3tables_query.py \
+  s3://<AthenaResultsBucket>/scripts/s3tables_query.py \
+  --region us-east-1
+```
+
+**4b-4. Submit the Spark job:**
+
+```bash
+aws emr-serverless start-job-run \
+  --application-id <applicationId> \
+  --execution-role-arn arn:aws:iam::<AccountId>:role/s3-tables-poc-emr-serverless \
+  --job-driver '{
+    "sparkSubmit": {
+      "entryPoint": "s3://<AthenaResultsBucket>/scripts/s3tables_query.py",
+      "sparkSubmitParameters": "--packages software.amazon.s3tables:s3-tables-catalog-for-iceberg-runtime:0.1.8"
+    }
+  }' \
+  --configuration-overrides '{
+    "monitoringConfiguration": {
+      "s3MonitoringConfiguration": {
+        "logUri": "s3://<AthenaResultsBucket>/emr-serverless-logs/"
+      }
+    }
+  }' \
+  --region us-east-1
+```
+
+Note the `jobRunId` from the output.
+
+**4b-5. Monitor the job:**
+
+```bash
+# Check job status (repeat until state is SUCCESS or FAILED)
+aws emr-serverless get-job-run \
+  --application-id <applicationId> \
+  --job-run-id <jobRunId> \
+  --region us-east-1 \
+  --query 'jobRun.state'
+```
+
+**4b-6. Review the job output:**
+
+```bash
+# List the log files
+aws s3 ls s3://<AthenaResultsBucket>/emr-serverless-logs/ --recursive
+
+# View the Spark driver stdout (contains the query results)
+aws s3 cp s3://<AthenaResultsBucket>/emr-serverless-logs/applications/<applicationId>/jobs/<jobRunId>/SPARK_DRIVER/stdout.gz - | gunzip
+```
+
+Verify the output matches what you see when querying the same tables via Athena.
+
+**4b-7. Clean up EMR Serverless resources:**
+
+```bash
+# Stop the application
+aws emr-serverless stop-application \
+  --application-id <applicationId> \
+  --region us-east-1
+
+# Delete the application
+aws emr-serverless delete-application \
+  --application-id <applicationId> \
+  --region us-east-1
+
+# Delete the IAM role (detach policies first)
+aws iam detach-role-policy \
+  --role-name s3-tables-poc-emr-serverless \
+  --policy-arn arn:aws:iam::aws:policy/AmazonS3TablesFullAccess
+aws iam delete-role-policy \
+  --role-name s3-tables-poc-emr-serverless \
+  --policy-name S3Access
+aws iam delete-role \
+  --role-name s3-tables-poc-emr-serverless
 ```
 
 ### Scenario 5: Streaming Ingestion with Amazon Data Firehose
@@ -560,6 +946,12 @@ aws s3tables delete-table \
   --name sensor_readings \
   --region us-east-1
 
+aws s3tables delete-table \
+  --table-bucket-arn <TableBucketARN> \
+  --namespace poc_data \
+  --name maintenance_test \
+  --region us-east-1
+
 aws s3tables delete-namespace \
   --table-bucket-arn <TableBucketARN> \
   --namespace poc_data \
@@ -568,10 +960,17 @@ aws s3tables delete-namespace \
 # Empty the Athena results bucket
 aws s3 rm s3://<AthenaResultsBucket> --recursive
 
-# Terminate EMR cluster if created (Scenario 4b)
-aws emr terminate-clusters --cluster-ids <ClusterId> --region us-east-1
+# Clean up EMR Serverless resources if created (Scenario 4b)
+aws emr-serverless stop-application --application-id <applicationId> --region us-east-1
+aws emr-serverless delete-application --application-id <applicationId> --region us-east-1
+aws iam detach-role-policy --role-name s3-tables-poc-emr-serverless --policy-arn arn:aws:iam::aws:policy/AmazonS3TablesFullAccess
+aws iam delete-role-policy --role-name s3-tables-poc-emr-serverless --policy-name S3Access
+aws iam delete-role --role-name s3-tables-poc-emr-serverless
 
-# Delete the stack
+# Delete any Firehose delivery streams created (Scenario 5)
+# aws firehose delete-delivery-stream --delivery-stream-name <stream-name> --region us-east-1
+
+# Delete the stack (removes VPC, VPC endpoints, EC2, S3 buckets, table bucket, Athena workgroup, IAM roles)
 aws cloudformation delete-stack \
   --stack-name s3-tables-poc \
   --region us-east-1
