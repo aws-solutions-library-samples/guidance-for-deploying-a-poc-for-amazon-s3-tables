@@ -282,12 +282,9 @@ Resources:
     Properties:
       TableBucketName: !Sub "${TableBucketName}-${AWS::AccountId}"
 
-  S3TablesNamespace:
-    Type: AWS::S3Tables::Namespace
-    DependsOn: S3TableBucket
-    Properties:
-      Namespace: !Ref DefaultNamespace
-      TableBucketARN: !GetAtt S3TableBucket.TableBucketARN
+  # Note: The s3tablescatalog federated catalog (SageMaker Lakehouse integration)
+  # is created via AWS CLI in Step 3b of the deployment guide, not in this template,
+  # due to a CloudFormation handler limitation with AWS::Glue::Catalog for S3 Tables.
 
   # ============ ATHENA ============
 
