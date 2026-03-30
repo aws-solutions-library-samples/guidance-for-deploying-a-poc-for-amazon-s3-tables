@@ -282,28 +282,12 @@ Resources:
     Properties:
       TableBucketName: !Sub "${TableBucketName}-${AWS::AccountId}"
 
-  # ============ SAGEMAKER LAKEHOUSE INTEGRATION ============
-
-  S3TablesCatalog:
-    Type: AWS::Glue::Catalog
+  S3TablesNamespace:
+    Type: AWS::S3Tables::Namespace
     DependsOn: S3TableBucket
     Properties:
-      Name: s3tablescatalog
-      CatalogInput:
-        FederatedCatalog:
-          Identifier: !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/*"
-          ConnectionName: "aws:s3tables"
-        CreateDatabaseDefaultPermissions:
-          - Principal:
-              DataLakePrincipalIdentifier: IAM_ALLOWED_PRINCIPALS
-            Permissions:
-              - ALL
-        CreateTableDefaultPermissions:
-          - Principal:
-              DataLakePrincipalIdentifier: IAM_ALLOWED_PRINCIPALS
-            Permissions:
-              - ALL
-        AllowFullTableExternalDataAccess: "True"
+      Namespace: !Ref DefaultNamespace
+      TableBucketARN: !GetAtt S3TableBucket.TableBucketARN
 
   # ============ ATHENA ============
 
