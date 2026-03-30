@@ -58,7 +58,14 @@ The CloudFormation template deploys the following architecture:
 ┌─────────────────────────────────────────────────────────┐
 │                        VPC                              │
 │  ┌───────────────────────────────────────────────────┐  │
-│  │              Private Subnet                       │  │
+│  │              Public Subnet                        │  │
+│  │  ┌──────────────┐                                 │  │
+│  │  │ NAT Gateway  │ ◄── Elastic IP                  │  │
+│  │  └──────┬───────┘                                 │  │
+│  └─────────┼─────────────────────────────────────────┘  │
+│            │                                            │
+│  ┌─────────┼─────────────────────────────────────────┐  │
+│  │         ▼    Private Subnet                       │  │
 │  │  ┌─────────────┐                                  │  │
 │  │  │  EC2 Instance│ ◄── SSM Session Manager         │  │
 │  │  │  (Test Host) │     (no public IP, no SSH)       │  │
@@ -87,28 +94,30 @@ The CloudFormation template deploys the following architecture:
 ```
 
 1. An EC2 instance is deployed in a **private subnet** with no public IP. Access is via AWS Systems Manager Session Manager.
-2. **VPC endpoints** provide private connectivity to AWS services (S3, S3 Tables, SSM, Glue, Athena) — no NAT Gateway or internet gateway required.
-3. An S3 table bucket is created with a default namespace for organizing Iceberg tables.
-4. The table bucket is integrated with AWS Glue Data Catalog via SageMaker Lakehouse for unified access.
-5. Amazon Athena is configured with a dedicated workgroup and S3 results bucket for serverless SQL queries.
-6. IAM roles provide least-privilege access to S3 Tables, Glue, Athena, and Lake Formation.
+2. A **NAT Gateway** in a public subnet provides the EC2 instance with outbound internet access for downloading Spark and dependencies.
+3. **VPC endpoints** provide private connectivity to AWS services (S3, S3 Tables, SSM, Glue, Athena) — AWS API traffic stays on the AWS network.
+4. An S3 table bucket is created with a default namespace for organizing Iceberg tables.
+5. The table bucket is integrated with AWS Glue Data Catalog via SageMaker Lakehouse for unified access.
+6. Amazon Athena is configured with a dedicated workgroup and S3 results bucket for serverless SQL queries.
+7. IAM roles provide least-privilege access to S3 Tables, Glue, Athena, and Lake Formation.
 
 ---
 
 ## Cost
 
-You are responsible for the cost of the AWS services used while running this PoC. As of March 2026, the estimated cost for running this PoC in **US East (N. Virginia)** with default settings is approximately **$5–15 per day**, depending on usage patterns.
+You are responsible for the cost of the AWS services used while running this PoC. As of March 2026, the estimated cost for running this PoC in **US East (N. Virginia)** with default settings is approximately **$6–17 per day**, depending on usage patterns.
 
 | Service | Estimated Daily Cost | Notes |
 |---|---|---|
 | Amazon S3 Tables | ~$0.50–$2.00 | Storage + PUT/GET requests |
 | Amazon Athena | ~$0–$5.00 | $5 per TB scanned |
 | Amazon EC2 (t3.xlarge) | ~$4.00 | On-demand pricing |
+| NAT Gateway | ~$1.10 | $0.045/hr + $0.045/GB data processed |
 | VPC Interface Endpoints (6) | ~$1.50 | $0.01/hr per endpoint per AZ |
 | Amazon EMR Serverless (optional) | ~$1–3 | Pay-per-use, only if running Scenario 4b |
 | AWS Glue Data Catalog | ~$0.00 | Free tier covers most PoC usage |
 
-> **Tip:** Stop or terminate the EC2 instance when not actively testing to minimize costs.
+> **Tip:** Stop or terminate the EC2 instance when not actively testing to minimize costs. The NAT Gateway incurs hourly charges even when idle — delete the stack when not in use to avoid unnecessary spend.
 
 ---
 
@@ -185,50 +194,7 @@ As of March 2026, Amazon S3 Tables is available in the following AWS Regions. Fo
 
 ## Deployment Steps
 
-### Step 1: Stage the Spark Binary and S3 Tables Catalog JAR in S3
-
-The EC2 instance runs in a private subnet with no internet access, so Spark and its dependencies cannot be downloaded directly onto it. Instead, download them on your **local machine** and upload to S3. The EC2 instance will pull them from S3 via the VPC gateway endpoint in Step 5.
-
-Run the following on your **local machine**:
-
-```bash
-# Download Spark locally
-curl -O https://archive.apache.org/dist/spark/spark-3.5.1/spark-3.5.1-bin-hadoop3.tgz
-
-# Download the S3 Tables catalog JAR
-curl -L -o s3-tables-catalog-for-iceberg-runtime-0.1.8.jar \
-  "https://repo1.maven.org/maven2/software/amazon/s3tables/s3-tables-catalog-for-iceberg-runtime/0.1.8/s3-tables-catalog-for-iceberg-runtime-0.1.8.jar"
-
-# Download the Iceberg Spark runtime JAR
-curl -L -o iceberg-spark-runtime-3.5_2.12-1.7.1.jar \
-  "https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-3.5_2.12/1.7.1/iceberg-spark-runtime-3.5_2.12-1.7.1.jar"
-
-# Download the Iceberg AWS bundle (includes AWS SDK v2)
-curl -L -o iceberg-aws-bundle-1.7.1.jar \
-  "https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws-bundle/1.7.1/iceberg-aws-bundle-1.7.1.jar"
-
-# Upload both to the Athena results bucket (created by the stack)
-# Note: Deploy the stack first (Step 2), then run these uploads
-aws s3 cp spark-3.5.1-bin-hadoop3.tgz \
-  s3://s3-tables-poc-athena-results-<AccountId>/staging/spark-3.5.1-bin-hadoop3.tgz \
-  --region us-east-1
-
-aws s3 cp s3-tables-catalog-for-iceberg-runtime-0.1.8.jar \
-  s3://s3-tables-poc-athena-results-<AccountId>/staging/s3-tables-catalog-for-iceberg-runtime-0.1.8.jar \
-  --region us-east-1
-
-aws s3 cp iceberg-spark-runtime-3.5_2.12-1.7.1.jar \
-  s3://s3-tables-poc-athena-results-<AccountId>/staging/iceberg-spark-runtime-3.5_2.12-1.7.1.jar \
-  --region us-east-1
-
-aws s3 cp iceberg-aws-bundle-1.7.1.jar \
-  s3://s3-tables-poc-athena-results-<AccountId>/staging/iceberg-aws-bundle-1.7.1.jar \
-  --region us-east-1
-```
-
-> **Note:** The S3 bucket is created by the CloudFormation stack, so you need to complete Step 2 first, then return here to upload the Spark binary before proceeding to Step 5.
-
-### Step 2: Deploy the CloudFormation Stack
+### Step 1: Deploy the CloudFormation Stack
 
 Deploy using the AWS CLI:
 
@@ -245,7 +211,7 @@ Or deploy via the AWS Console:
 2. Upload `s3-tables-poc.yaml`.
 3. Acknowledge IAM resource creation and deploy.
 
-### Step 3: Retrieve Stack Outputs
+### Step 2: Retrieve Stack Outputs
 
 ```bash
 aws cloudformation describe-stacks \
@@ -262,7 +228,7 @@ Key outputs:
 - `AthenaWorkgroupName` — Athena workgroup for queries
 - `TableBucketName` — Table bucket name
 
-### Step 3b: Set Up SageMaker Lakehouse Integration
+### Step 2b: Set Up SageMaker Lakehouse Integration
 
 The S3 Tables integration with AWS analytics services requires creating a federated `s3tablescatalog` in the Glue Data Catalog. This is done via CLI (not CloudFormation, due to a CFN handler limitation).
 
@@ -311,7 +277,7 @@ aws glue get-catalog --catalog-id s3tablescatalog --region us-east-1
 
 You should see your table bucket listed when you query the catalog. Tables and namespaces you create in later steps will automatically appear in the Glue Data Catalog and be queryable from Athena, Redshift, EMR, and other integrated services.
 
-### Step 3c: Grant Lake Formation Permissions
+### Step 2c: Grant Lake Formation Permissions
 
 Lake Formation controls access to the `s3tablescatalog` independently of IAM. Grant your deploying role permissions on the catalog, database, and tables:
 
@@ -347,7 +313,7 @@ aws lakeformation grant-permissions \
 
 > **Note:** This is a one-time setup per account/region. If the catalog already exists, the `create-catalog` command will return an `AlreadyExistsException` — that's fine, skip to verification.
 
-### Step 4: Connect to the EC2 Instance via Session Manager
+### Step 3: Connect to the EC2 Instance via Session Manager
 
 ```bash
 aws ssm start-session --target <EC2InstanceId> --region us-east-1
@@ -355,19 +321,27 @@ aws ssm start-session --target <EC2InstanceId> --region us-east-1
 
 > **Note:** The EC2 instance runs in a private subnet with no public IP. Access is provided securely through AWS Systems Manager Session Manager — no SSH keys, no open inbound ports. Ensure the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) is installed on your local machine.
 
-### Step 5: Install Spark and S3 Tables Catalog JAR from S3
+### Step 4: Install Spark and Dependencies
 
-Once connected via SSM, install Spark and the S3 Tables catalog JAR from the staged S3 artifacts:
+Once connected via SSM, download and install Spark and the required JARs directly on the EC2 instance (internet access is provided via the NAT Gateway):
 
 ```bash
 sudo yum install -y java-17-amazon-corretto
-sudo aws s3 cp s3://<AthenaResultsBucket>/staging/spark-3.5.1-bin-hadoop3.tgz /opt/
+
+# Download Spark and JARs into a staging folder, then install
+mkdir -p ~/staging && cd ~/staging
+
+curl -O https://archive.apache.org/dist/spark/spark-3.5.1/spark-3.5.1-bin-hadoop3.tgz
+curl -L -O "https://repo1.maven.org/maven2/software/amazon/s3tables/s3-tables-catalog-for-iceberg-runtime/0.1.8/s3-tables-catalog-for-iceberg-runtime-0.1.8.jar"
+curl -L -O "https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-3.5_2.12/1.7.1/iceberg-spark-runtime-3.5_2.12-1.7.1.jar"
+curl -L -O "https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws-bundle/1.7.1/iceberg-aws-bundle-1.7.1.jar"
+
+# Install Spark
+sudo cp spark-3.5.1-bin-hadoop3.tgz /opt/
 cd /opt && sudo tar xzf spark-3.5.1-bin-hadoop3.tgz && sudo ln -s spark-3.5.1-bin-hadoop3 spark
 
-# Install the S3 Tables catalog JAR and Iceberg Spark runtime JAR
-sudo aws s3 cp s3://<AthenaResultsBucket>/staging/s3-tables-catalog-for-iceberg-runtime-0.1.8.jar /opt/spark/jars/
-sudo aws s3 cp s3://<AthenaResultsBucket>/staging/iceberg-spark-runtime-3.5_2.12-1.7.1.jar /opt/spark/jars/
-sudo aws s3 cp s3://<AthenaResultsBucket>/staging/iceberg-aws-bundle-1.7.1.jar /opt/spark/jars/
+# Install the Iceberg JARs
+sudo cp ~/staging/*.jar /opt/spark/jars/
 
 # Set environment variables (and persist for future sessions)
 echo 'export SPARK_HOME=/opt/spark' | sudo tee /etc/profile.d/spark.sh
@@ -376,7 +350,7 @@ echo 'export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto' | sudo tee -a /etc/
 source /etc/profile.d/spark.sh
 ```
 
-### Step 6: Verify Environment and Begin Testing
+### Step 5: Verify Environment and Begin Testing
 
 Confirm the EC2 instance can reach your S3 table bucket:
 
@@ -417,7 +391,7 @@ Use the following matrix to define and track your PoC success criteria:
 > **Troubleshooting: `PERMISSION_DENIED` / 403 errors in Athena**
 > If you receive a `Could not access through this access point` error when running queries, check the following:
 > 1. **Workgroup** — ensure you have selected the correct workgroup (e.g., `s3-tables-poc-workgroup`) at the top of the Athena console. Switching catalogs or session expiry can reset this.
-> 2. **Lake Formation grants** — re-run the grant commands from Step 3c. Grants may need to be re-applied for each new table you create. Replace `<TABLE_NAME>` with the table causing the error:
+> 2. **Lake Formation grants** — re-run the grant commands from Step 2c. Grants may need to be re-applied for each new table you create. Replace `<TABLE_NAME>` with the table causing the error:
 > ```
 > aws lakeformation grant-permissions \
 >   --principal '{"DataLakePrincipalIdentifier": "arn:aws:iam::<AccountId>:role/<YOUR_ROLE_NAME>"}' \
@@ -450,7 +424,7 @@ aws s3tables list-namespaces \
 
 1. Open the **Athena** console.
 2. Select the workgroup created by the stack (e.g., `s3-tables-poc-workgroup`).
-3. In the Data Source panel, select the AWS Glue Data Catalog. Your table bucket should appear under the `s3tablescatalog` federated catalog (set up in Step 3b).
+3. In the Data Source panel, select the AWS Glue Data Catalog. Your table bucket should appear under the `s3tablescatalog` federated catalog (set up in Step 2b).
 
 **1c. Create the table and insert data (Athena):**
 
@@ -769,7 +743,7 @@ Note the `total_rows` value.
 
 **4b. Query the same data via Spark on EC2:**
 
-Connect to the EC2 instance via SSM (Step 4), ensure Spark is installed (Step 5), then launch a Spark shell from any directory:
+Connect to the EC2 instance via SSM (Step 3), ensure Spark is installed (Step 4), then launch a Spark shell from any directory:
 
 ```bash
 cd ~
@@ -1149,7 +1123,7 @@ aws iam delete-role --role-name s3-tables-poc-emr-serverless
 # Delete any Firehose delivery streams created (Scenario 5)
 # aws firehose delete-delivery-stream --delivery-stream-name <stream-name> --region us-east-1
 
-# Delete the s3tablescatalog (created in Step 3b)
+# Delete the s3tablescatalog (created in Step 2b)
 aws glue delete-catalog --catalog-id s3tablescatalog --region us-east-1
 
 # Delete the stack (removes VPC, VPC endpoints, EC2, S3 buckets, table bucket, Athena workgroup, IAM roles)

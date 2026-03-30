@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: "(SO9XXX) - Guidance for Deploying a PoC for Amazon S3 Tables. Template deploys a VPC with private subnet (VPC endpoints, no NAT Gateway), EC2 instance (SSM access), S3 table bucket, Athena workgroup, and required IAM roles."
+Description: "(SO9XXX) - Guidance for Deploying a PoC for Amazon S3 Tables. Template deploys a VPC with public and private subnets (NAT Gateway for internet access, VPC endpoints for AWS services), EC2 instance (SSM access), S3 table bucket, Athena workgroup, and required IAM roles."
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -46,6 +46,76 @@ Resources:
         - Key: Name
           Value: !Sub "${AWS::StackName}-vpc"
 
+  # ---- Public subnet (hosts NAT Gateway only) ----
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-subnet"
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-igw"
+
+  IGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-rt"
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IGWAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # ---- NAT Gateway (single AZ, PoC-appropriate) ----
+
+  NATGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: IGWAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-nat-eip"
+
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-nat"
+
+  # ---- Private subnet ----
+
   PrivateSubnet:
     Type: AWS::EC2::Subnet
     Properties:
@@ -64,6 +134,13 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-private-rt"
+
+  PrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
 
   PrivateSubnetRouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
@@ -186,7 +263,12 @@ Resources:
           FromPort: 443
           ToPort: 443
           CidrIp: 0.0.0.0/0
-          Description: HTTPS to AWS services via VPC endpoints and S3 gateway
+          Description: HTTPS to AWS services and internet (via NAT Gateway)
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP for package downloads (via NAT Gateway)
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-ec2-sg"
@@ -256,7 +338,7 @@ Resources:
       Roles:
         - !Ref EC2Role
 
-  # ============ S3 (Athena Results + Spark Staging) ============
+  # ============ S3 (Athena Results) ============
 
   AthenaResultsBucket:
     Type: AWS::S3::Bucket
@@ -309,6 +391,7 @@ Resources:
       - SSMEndpoint
       - SSMMessagesEndpoint
       - EC2MessagesEndpoint
+      - NATGateway
     Properties:
       InstanceType: !Ref InstanceType
       SubnetId: !Ref PrivateSubnet
@@ -324,12 +407,12 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash -xe
-          # Note: yum repos and Spark tarball must be pre-staged in S3
-          # since this instance has no internet access (VPC endpoints only).
+          # The instance has internet access via NAT Gateway for downloading
+          # Spark and JARs. AWS service traffic uses VPC endpoints.
           # Java 17 and SSM agent are included in the AL2023 AMI.
 
           # Signal completion
-          echo "S3 Tables PoC instance ready (install Spark via S3 staging)" > /tmp/setup-complete.txt
+          echo "S3 Tables PoC instance ready" > /tmp/setup-complete.txt
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-test-host"
@@ -356,7 +439,7 @@ Outputs:
     Value: !Ref AthenaWorkgroup
 
   AthenaResultsBucketName:
-    Description: S3 bucket for Athena query results (also used for Spark staging)
+    Description: S3 bucket for Athena query results
     Value: !Ref AthenaResultsBucket
 
   DefaultNamespace:
