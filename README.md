@@ -10,8 +10,9 @@
 6. [PoC Methodology and Success Criteria](#poc-methodology-and-success-criteria)
 7. [Test Scenarios](#test-scenarios)
 8. [SME Guidance](#sme-guidance)
-9. [Cleanup](#cleanup)
-10. [Notices](#notices)
+9. [Verifying an Existing s3tablescatalog](#verifying-an-existing-s3tablescatalog)
+10. [Cleanup](#cleanup)
+11. [Notices](#notices)
 
 ---
 
@@ -125,7 +126,25 @@ You are responsible for the cost of the AWS services used while running this PoC
 
 - An AWS account with permissions to create IAM roles, VPCs, EC2 instances, S3 table buckets, Athena workgroups, and Glue resources.
 - AWS CLI v2 installed locally (for deployment and SSM Session Manager access).
-- The [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) installed for your AWS CLI.
+- The [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) installed for your AWS CLI:
+
+```bash
+# macOS (Apple Silicon)
+curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/mac_arm64/sessionmanager-bundle.zip" -o "sessionmanager-bundle.zip"
+unzip sessionmanager-bundle.zip
+sudo ./sessionmanager-bundle/install -i /usr/local/sessionmanagerplugin -b /usr/local/bin/session-manager-plugin
+rm -rf sessionmanager-bundle sessionmanager-bundle.zip
+
+# macOS (Intel) — use mac instead of mac_arm64:
+# curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/mac/sessionmanager-bundle.zip" -o "sessionmanager-bundle.zip"
+
+# Linux (64-bit)
+# curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o "session-manager-plugin.deb"
+# sudo dpkg -i session-manager-plugin.deb
+
+# Verify installation
+session-manager-plugin
+```
 - **Lake Formation data lake administrator** — the deploying principal must be registered as a Lake Formation admin. This is required because the template creates a federated `s3tablescatalog` in the Glue Data Catalog, which requires Lake Formation permissions regardless of IAM admin access. Run the following one-time setup before deploying:
 
 ```bash
@@ -277,46 +296,15 @@ aws glue get-catalog --catalog-id s3tablescatalog --region us-east-1
 
 You should see your table bucket listed when you query the catalog. Tables and namespaces you create in later steps will automatically appear in the Glue Data Catalog and be queryable from Athena, Redshift, EMR, and other integrated services.
 
-### Step 2c: Grant Lake Formation Permissions
-
-Lake Formation controls access to the `s3tablescatalog` independently of IAM. Grant your deploying role permissions on the catalog, database, and tables:
-
-```bash
-# Replace <TABLE_BUCKET_NAME> with your table bucket name from stack outputs (e.g., s3-tables-poc-<AccountId>)
-CATALOG_ID="s3tablescatalog/<TABLE_BUCKET_NAME>"
-PRINCIPAL='{"DataLakePrincipalIdentifier": "arn:aws:iam::<AccountId>:role/<YOUR_ROLE_NAME>"}'
-
-# Grant on the database
-aws lakeformation grant-permissions \
-  --principal "$PRINCIPAL" \
-  --resource "{\"Database\": {\"CatalogId\": \"$CATALOG_ID\", \"Name\": \"poc_data\"}}" \
-  --permissions ALL \
-  --region us-east-1
-
-# Grant on all tables in the database
-aws lakeformation grant-permissions \
-  --principal "$PRINCIPAL" \
-  --resource "{\"Table\": {\"CatalogId\": \"$CATALOG_ID\", \"DatabaseName\": \"poc_data\", \"TableWildcard\": {}}}" \
-  --permissions ALL \
-  --region us-east-1
-
-# Grant full permissions with grant option on all tables (required for Iceberg metadata queries like $files and $snapshots)
-aws lakeformation grant-permissions \
-  --principal "$PRINCIPAL" \
-  --resource "{\"Table\": {\"CatalogId\": \"$CATALOG_ID\", \"DatabaseName\": \"poc_data\", \"TableWildcard\": {}}}" \
-  --permissions SELECT INSERT DELETE ALTER DROP \
-  --permissions-with-grant-option SELECT INSERT DELETE ALTER DROP \
-  --region us-east-1
-```
-
-> **Note:** Replace `<AccountId>` and `<YOUR_ROLE_NAME>` with your AWS account ID and the IAM role you use in the Athena console. The `poc_data` namespace must exist before running these commands (created in Scenario 1, step 1a). **Re-run the table wildcard grants after creating new tables** (e.g., `maintenance_test` in Scenario 3), as the wildcard may not automatically cover tables created after the initial grant.
-
-> **Note:** This is a one-time setup per account/region. If the catalog already exists, the `create-catalog` command will return an `AlreadyExistsException` — that's fine, skip to verification.
+> **Note:** If the catalog already exists, the `create-catalog` command will return an `AlreadyExistsException` — that's fine. Run the `get-catalog` verification command above and compare the output against the expected configuration in [Verifying an Existing s3tablescatalog](#verifying-an-existing-s3tablescatalog). If permissions don't match, update the catalog before proceeding.
 
 ### Step 3: Connect to the EC2 Instance via Session Manager
 
 ```bash
-aws ssm start-session --target <EC2InstanceId> --region us-east-1
+# Use the SSM command from stack outputs
+SSM_COMMAND=$(aws cloudformation describe-stacks --stack-name s3-tables-poc --query "Stacks[0].Outputs[?OutputKey=='SSMSessionCommand'].OutputValue" --output text --region us-east-1)
+echo "$SSM_COMMAND"
+eval $SSM_COMMAND
 ```
 
 > **Note:** The EC2 instance runs in a private subnet with no public IP. Access is provided securely through AWS Systems Manager Session Manager — no SSH keys, no open inbound ports. Ensure the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) is installed on your local machine.
@@ -388,24 +376,11 @@ Use the following matrix to define and track your PoC success criteria:
 
 ## Test Scenarios
 
-> **Troubleshooting: `PERMISSION_DENIED` / 403 errors in Athena**
-> If you receive a `Could not access through this access point` error when running queries, check the following:
-> 1. **Workgroup** — ensure you have selected the correct workgroup (e.g., `s3-tables-poc-workgroup`) at the top of the Athena console. Switching catalogs or session expiry can reset this.
-> 2. **Lake Formation grants** — re-run the grant commands from Step 2c. Grants may need to be re-applied for each new table you create. Replace `<TABLE_NAME>` with the table causing the error:
-> ```
-> aws lakeformation grant-permissions \
->   --principal '{"DataLakePrincipalIdentifier": "arn:aws:iam::<AccountId>:role/<YOUR_ROLE_NAME>"}' \
->   --resource '{"Table": {"CatalogId": "s3tablescatalog/<TableBucketName>", "DatabaseName": "poc_data", "Name": "<TABLE_NAME>"}}' \
->   --permissions SELECT INSERT DELETE ALTER DROP \
->   --permissions-with-grant-option SELECT INSERT DELETE ALTER DROP \
->   --region us-east-1
-> ```
-
 ### Scenario 1: Basic Table Operations
 
 Validates core CRUD functionality: creating namespaces, tables, inserting data, updating, deleting, and querying.
 
-**1a. Create a namespace (AWS CLI via SSM session):**
+**1a. Create a namespace (run on EC2 via SSM session):**
 
 ```bash
 # Create a namespace
@@ -418,6 +393,78 @@ aws s3tables create-namespace \
 aws s3tables list-namespaces \
   --table-bucket-arn <TableBucketARN> \
   --region us-east-1
+```
+
+**1a-2. Grant Lake Formation permissions:**
+
+Exit the SSM session to return to your local terminal, then run the Lake Formation grants:
+
+```bash
+# Exit the SSM session first
+exit
+```
+
+From your **local machine**:
+
+```bash
+# Pull values from stack outputs
+CATALOG_ID=$(aws cloudformation describe-stacks --stack-name s3-tables-poc --query "Stacks[0].Outputs[?OutputKey=='LakeFormationCatalogId'].OutputValue" --output text --region us-east-1)
+EC2_ROLE_ARN=$(aws cloudformation describe-stacks --stack-name s3-tables-poc --query "Stacks[0].Outputs[?OutputKey=='EC2RoleArn'].OutputValue" --output text --region us-east-1)
+MY_ROLE_ARN=$(aws sts get-caller-identity --query Arn --output text --region us-east-1 | sed 's|sts|iam|;s|assumed-role|role|;s|/[^/]*$||')
+
+echo "Catalog ID:   $CATALOG_ID"
+echo "EC2 Role ARN: $EC2_ROLE_ARN"
+echo "My Role ARN:  $MY_ROLE_ARN"
+```
+
+```bash
+# Grant EC2 role permissions
+aws lakeformation grant-permissions \
+  --principal "{\"DataLakePrincipalIdentifier\": \"$EC2_ROLE_ARN\"}" \
+  --resource "{\"Database\": {\"CatalogId\": \"$CATALOG_ID\", \"Name\": \"poc_data\"}}" \
+  --permissions ALL \
+  --region us-east-1
+
+aws lakeformation grant-permissions \
+  --principal "{\"DataLakePrincipalIdentifier\": \"$EC2_ROLE_ARN\"}" \
+  --resource "{\"Table\": {\"CatalogId\": \"$CATALOG_ID\", \"DatabaseName\": \"poc_data\", \"TableWildcard\": {}}}" \
+  --permissions ALL \
+  --region us-east-1
+
+aws lakeformation grant-permissions \
+  --principal "{\"DataLakePrincipalIdentifier\": \"$EC2_ROLE_ARN\"}" \
+  --resource "{\"Table\": {\"CatalogId\": \"$CATALOG_ID\", \"DatabaseName\": \"poc_data\", \"TableWildcard\": {}}}" \
+  --permissions SELECT INSERT DELETE ALTER DROP \
+  --permissions-with-grant-option SELECT INSERT DELETE ALTER DROP \
+  --region us-east-1
+
+# Grant your own role permissions (for Athena console access)
+aws lakeformation grant-permissions \
+  --principal "{\"DataLakePrincipalIdentifier\": \"$MY_ROLE_ARN\"}" \
+  --resource "{\"Database\": {\"CatalogId\": \"$CATALOG_ID\", \"Name\": \"poc_data\"}}" \
+  --permissions ALL \
+  --region us-east-1
+
+aws lakeformation grant-permissions \
+  --principal "{\"DataLakePrincipalIdentifier\": \"$MY_ROLE_ARN\"}" \
+  --resource "{\"Table\": {\"CatalogId\": \"$CATALOG_ID\", \"DatabaseName\": \"poc_data\", \"TableWildcard\": {}}}" \
+  --permissions ALL \
+  --region us-east-1
+
+aws lakeformation grant-permissions \
+  --principal "{\"DataLakePrincipalIdentifier\": \"$MY_ROLE_ARN\"}" \
+  --resource "{\"Table\": {\"CatalogId\": \"$CATALOG_ID\", \"DatabaseName\": \"poc_data\", \"TableWildcard\": {}}}" \
+  --permissions SELECT INSERT DELETE ALTER DROP \
+  --permissions-with-grant-option SELECT INSERT DELETE ALTER DROP \
+  --region us-east-1
+```
+
+> **Note:** Re-run the table wildcard grants after creating new tables (e.g., `maintenance_test` in Scenario 3), as the wildcard may not automatically cover tables created after the initial grant. If you used a different stack name, replace `s3-tables-poc` in the commands above.
+
+Reconnect to the EC2 instance for subsequent CLI steps:
+
+```bash
+eval $(aws cloudformation describe-stacks --stack-name s3-tables-poc --query "Stacks[0].Outputs[?OutputKey=='SSMSessionCommand'].OutputValue" --output text --region us-east-1)
 ```
 
 **1b. Open Athena and connect to your table bucket:**
@@ -447,7 +494,9 @@ CREATE TABLE poc_data.sensor_readings (
   reading_time TIMESTAMP
 )
 TBLPROPERTIES ('table_type' = 'ICEBERG');
+```
 
+```sql
 -- Insert sample data
 INSERT INTO poc_data.sensor_readings VALUES
   (1, 'sensor-a', 23.5, TIMESTAMP '2026-03-16 10:00:00'),
@@ -455,9 +504,12 @@ INSERT INTO poc_data.sensor_readings VALUES
   (3, 'sensor-a', 24.1, TIMESTAMP '2026-03-16 10:10:00'),
   (4, 'sensor-c', 19.8, TIMESTAMP '2026-03-16 10:15:00'),
   (5, 'sensor-b', 17.9, TIMESTAMP '2026-03-16 10:20:00');
+```
 
--- Verify the table via CLI
--- aws s3tables get-table --table-bucket-arn <TableBucketARN> --namespace poc_data --name sensor_readings --region us-east-1
+Optionally, verify the table via CLI (from the EC2 SSM session):
+
+```bash
+aws s3tables get-table --table-bucket-arn <TableBucketARN> --namespace poc_data --name sensor_readings --region us-east-1
 ```
 
 **1d. Query data:**
@@ -518,26 +570,22 @@ SELECT * FROM poc_data.sensor_readings
 FOR TIMESTAMP AS OF TIMESTAMP '2026-03-16 10:00:00';
 ```
 
-**1g. Clean up test table (optional):**
-
-```bash
-aws s3tables delete-table \
-  --table-bucket-arn <TableBucketARN> \
-  --namespace poc_data \
-  --name sensor_readings \
-  --region us-east-1
-```
-
 ### Scenario 2: Schema Evolution
+
+> **Note:** Ensure your Athena query editor is still pointed at the correct catalog (`s3tablescatalog/<your-table-bucket-name>`) and database (`poc_data`) before running these queries. The catalog selection can reset between sessions.
 
 ```sql
 -- Add a new column
 ALTER TABLE poc_data.sensor_readings ADD COLUMNS (location STRING);
+```
 
+```sql
 -- Insert data with new schema
 INSERT INTO poc_data.sensor_readings
 VALUES (4, 'sensor-c', 19.8, current_timestamp, 'building-a');
+```
 
+```sql
 -- Query — old rows have NULL for new column
 SELECT * FROM poc_data.sensor_readings;
 ```
@@ -572,9 +620,9 @@ FROM poc_data."maintenance_test$files";
 Each INSERT creates at least one new data file. Run the following script from your local machine or the EC2 instance (via SSM) to submit all 10 inserts automatically:
 
 ```bash
-# Replace these values with your actual stack outputs
-WORKGROUP="<AthenaWorkgroupName>"          # e.g., s3-tables-poc-workgroup
-TABLE_BUCKET="<TableBucketName>"           # e.g., s3-tables-poc-<AccountId>
+# Pull values from stack outputs
+WORKGROUP=$(aws cloudformation describe-stacks --stack-name s3-tables-poc --query "Stacks[0].Outputs[?OutputKey=='AthenaWorkgroupName'].OutputValue" --output text --region us-east-1)
+TABLE_BUCKET=$(aws cloudformation describe-stacks --stack-name s3-tables-poc --query "Stacks[0].Outputs[?OutputKey=='TableBucketName'].OutputValue" --output text --region us-east-1)
 CONTEXT="Catalog=s3tablescatalog/${TABLE_BUCKET},Database=poc_data"
 REGION="us-east-1"
 
@@ -1012,6 +1060,41 @@ SELECT * FROM poc_data.sensor_readings ORDER BY id DESC;
 
 ---
 
+### Troubleshooting: `PERMISSION_DENIED` / 403 errors in Athena
+
+If you receive a `Could not access through this access point` or `AccessDeniedException` error, check the following:
+
+1. **Lake Formation admin not registered** — Lake Formation admin registration is per-region. If you deployed to a new region or this is a fresh account, your role may not be registered. Check and fix:
+
+```bash
+# Check if your role is listed as a Lake Formation admin
+aws lakeformation get-data-lake-settings --region us-east-1 --query "DataLakeSettings.DataLakeAdmins"
+
+# If the list is empty or your role is missing, register it
+ROLE_ARN=$(aws sts get-caller-identity --query Arn --output text --region us-east-1 | sed 's|sts|iam|;s|assumed-role|role|;s|/[^/]*$||')
+aws lakeformation put-data-lake-settings \
+  --data-lake-settings "{\"DataLakeAdmins\": [{\"DataLakePrincipalIdentifier\": \"$ROLE_ARN\"}]}" \
+  --region us-east-1
+```
+
+2. **Workgroup** — ensure you have selected the correct workgroup (e.g., `s3-tables-poc-workgroup`) at the top of the Athena console. Switching catalogs or session expiry can reset this.
+
+3. **Lake Formation grants** — re-run the grant commands from Scenario 1, step 1a-2. Grants may need to be re-applied for each new table you create. To grant on a specific table (run from your **local machine**):
+
+```bash
+CATALOG_ID=$(aws cloudformation describe-stacks --stack-name s3-tables-poc --query "Stacks[0].Outputs[?OutputKey=='LakeFormationCatalogId'].OutputValue" --output text --region us-east-1)
+MY_ROLE_ARN=$(aws sts get-caller-identity --query Arn --output text --region us-east-1 | sed 's|sts|iam|;s|assumed-role|role|;s|/[^/]*$||')
+
+aws lakeformation grant-permissions \
+  --principal "{\"DataLakePrincipalIdentifier\": \"$MY_ROLE_ARN\"}" \
+  --resource "{\"Table\": {\"CatalogId\": \"$CATALOG_ID\", \"DatabaseName\": \"poc_data\", \"Name\": \"<TABLE_NAME>\"}}" \
+  --permissions SELECT INSERT DELETE ALTER DROP \
+  --permissions-with-grant-option SELECT INSERT DELETE ALTER DROP \
+  --region us-east-1
+```
+
+---
+
 ## SME Guidance
 
 ### Table Bucket Design
@@ -1084,6 +1167,75 @@ Many organizations benefit from using both:
 - **Self-Managed** for archival and cost-optimized storage (historical data, compliance archives)
 - **S3 Tables for new projects** to avoid building maintenance infrastructure
 - **Self-Managed for existing workloads** until migration makes sense
+
+---
+
+### Verifying an Existing s3tablescatalog
+
+If your account already has an `s3tablescatalog` (e.g., from a previous PoC or another team), verify its configuration matches what this PoC requires before proceeding.
+
+**1. Retrieve the current catalog configuration:**
+
+```bash
+aws glue get-catalog --catalog-id s3tablescatalog --region us-east-1
+```
+
+**2. Check the following fields in the output:**
+
+| Field | Expected Value | Why It Matters |
+|---|---|---|
+| `FederatedCatalog.Identifier` | `arn:aws:s3tables:us-east-1:<AccountId>:bucket/*` | Must point to S3 Tables in the correct region. A narrower ARN (specific bucket) will hide other table buckets. |
+| `FederatedCatalog.ConnectionName` | `aws:s3tables` | Must be the S3 Tables connection type. |
+| `CreateDatabaseDefaultPermissions` | `IAM_ALLOWED_PRINCIPALS` with `ALL` | Allows IAM principals to access new databases by default. Without this, new namespaces may not be visible. |
+| `CreateTableDefaultPermissions` | `IAM_ALLOWED_PRINCIPALS` with `ALL` | Allows IAM principals to access new tables by default. Without this, newly created tables may return permission errors. |
+| `AllowFullTableExternalDataAccess` | `True` | Required for cross-engine access (Athena, Spark, EMR). If `False`, queries from some engines may fail with access denied. |
+
+**3. If any field doesn't match, update the catalog:**
+
+```bash
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+cat > /tmp/catalog-update.json << EOF
+{
+  "CatalogId": "s3tablescatalog",
+  "CatalogInput": {
+    "FederatedCatalog": {
+      "Identifier": "arn:aws:s3tables:us-east-1:${ACCOUNT_ID}:bucket/*",
+      "ConnectionName": "aws:s3tables"
+    },
+    "CreateDatabaseDefaultPermissions": [
+      {
+        "Principal": {
+          "DataLakePrincipalIdentifier": "IAM_ALLOWED_PRINCIPALS"
+        },
+        "Permissions": ["ALL"]
+      }
+    ],
+    "CreateTableDefaultPermissions": [
+      {
+        "Principal": {
+          "DataLakePrincipalIdentifier": "IAM_ALLOWED_PRINCIPALS"
+        },
+        "Permissions": ["ALL"]
+      }
+    ],
+    "AllowFullTableExternalDataAccess": "True"
+  }
+}
+EOF
+
+aws glue update-catalog \
+  --region us-east-1 \
+  --cli-input-json file:///tmp/catalog-update.json
+```
+
+**4. Verify the update:**
+
+```bash
+aws glue get-catalog --catalog-id s3tablescatalog --region us-east-1
+```
+
+After confirming the catalog configuration is correct, continue with Step 2c to grant Lake Formation permissions.
 
 ---
 

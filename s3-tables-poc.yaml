@@ -442,6 +442,14 @@ Outputs:
     Description: S3 bucket for Athena query results
     Value: !Ref AthenaResultsBucket
 
+  EC2RoleArn:
+    Description: ARN of the EC2 IAM role (use for Lake Formation grants)
+    Value: !GetAtt EC2Role.Arn
+
+  LakeFormationCatalogId:
+    Description: Catalog ID for Lake Formation grants (<AccountId>:s3tablescatalog/<TableBucketName>)
+    Value: !Sub "${AWS::AccountId}:s3tablescatalog/${TableBucketName}-${AWS::AccountId}"
+
   DefaultNamespace:
     Description: Default namespace for tables
     Value: !Ref DefaultNamespace
