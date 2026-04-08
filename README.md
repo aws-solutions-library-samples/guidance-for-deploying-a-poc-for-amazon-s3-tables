@@ -17,6 +17,20 @@
 
 ## Overview
 
+### Business Case
+
+Customers evaluating Amazon S3 Tables for analytics workloads face a common challenge: there's no quick, standardized way to deploy a working environment and validate the service against their requirements. Without guidance, customers often misconfigure PoC environments (permissions, catalog integration, table creation), spend weeks on setup instead of testing, miss key evaluation dimensions (compaction, multi-engine access, streaming ingestion), and draw incorrect conclusions from poorly configured evaluations.
+
+This PoC guide solves these problems by:
+
+- **Accelerating time-to-decision** — reduces PoC setup from weeks to hours with a CloudFormation template and step-by-step tested instructions
+- **Improving PoC outcomes** — ensures customers evaluate S3 Tables in an optimally configured environment, leading to fair evaluations
+- **Reducing AWS engagement overhead** — customers can self-serve the PoC without requiring specialist involvement for setup and configuration
+- **Decreasing stop-start cycles** — provides a complete end-to-end guide covering deployment, test scenarios, troubleshooting, and cleanup
+- **Enabling informed architectural decisions** — includes SME guidance comparing S3 Tables vs self-managed Iceberg with a decision framework
+
+### What This Guidance Deploys
+
 This Guidance helps users deploy and configure an optimal proof-of-concept (PoC) environment for **Amazon S3 Tables**. Amazon S3 Tables deliver the first cloud object store with built-in Apache Iceberg support, providing a fully managed, Iceberg-native storage layer optimized for analytics workloads. S3 Tables automatically handle table maintenance operations such as compaction, snapshot management, and unreferenced file removal — delivering up to 3x faster query performance and up to 10x more transactions per second compared to self-managed Iceberg tables.
 
 Using this Guidance, you can quickly deploy a PoC environment that allows you to:
@@ -125,7 +139,6 @@ You are responsible for the cost of the AWS services used while running this PoC
 # For IAM users, use the ARN as-is (e.g., arn:aws:iam::<AccountId>:user/Admin)
 # For assumed roles, convert to the role ARN (e.g., arn:aws:iam::<AccountId>:role/Admin_role)
 ROLE_ARN="<your-IAM-ARN>"
-REGION="<your-REGION>"
 
 # Register as a Lake Formation data lake administrator
 aws lakeformation put-data-lake-settings \
@@ -230,9 +243,10 @@ Set these as environment variables for use in subsequent steps (replace values w
 export TABLE_BUCKET_ARN="<TableBucketARN>"
 export TABLE_BUCKET_NAME="<TableBucketName>"
 export EC2_INSTANCE_ID="<EC2InstanceId>"
-export WORKGROUP="<AthenaWorkgroupName>"
+export WORKGROUP="$WORKGROUP"
 export RESULTS_BUCKET="<AthenaResultsBucketName>"
 export CATALOG_ID="<LakeFormationCatalogId>"
+export REGION="<Region>"
 ```
 
 > **Note:** These variables are used throughout the remaining steps and test scenarios. Re-export them if you open a new terminal session.
@@ -335,11 +349,9 @@ spark-shell --version
 
 > **Note:** SSM Session Manager starts in `sh` by default. Type `bash` first to get a full bash shell. If `spark-shell` is not found, the UserData script may still be running. Check progress with: `cat /tmp/setup-complete.txt`. Wait until it shows "S3 Tables PoC instance setup complete".
 
-> We'll return to the spark-shell for step 3j in "Scenario 3: Automated Table Maintenance (Binpack Compaction and Partition Pruning)". For now, type `exit` at the bash shell, then again at the "sh" shell, to return to your local command line.
-
 ### Step 6: Create Tables and Query via Athena
 
-1. Open the **Athena** console, select the **Query editor**, then select the Workgroup (from your stack outputs, e.g., `s3-tables-poc-workgroup`) in the drop down list at the top right.
+1. Open the **Athena** console and select the workgroup from your stack outputs (e.g., `s3-tables-poc-workgroup`).
 2. Select **Data source:** `AwsDataCatalog`, **Catalog:** `s3tablescatalog/<your-table-bucket-name>`, **Database:** `poc_data`.
 3. If prompted to set a query result location, enter `s3://s3-tables-poc-athena-results-<AccountId>/results/` and click **Save**.
 4. Create your first table:
@@ -387,10 +399,10 @@ Use the following matrix to define and track your PoC success criteria:
 > **Troubleshooting: `PERMISSION_DENIED` / 403 errors in Athena**
 > If you receive a `Could not access through this access point` error when running queries, check the following:
 > 1. **Workgroup** — ensure you have selected the correct workgroup (e.g., `s3-tables-poc-workgroup`) at the top of the Athena console. Switching catalogs or session expiry can reset this.
-> 2. **Lake Formation grants** — re-run the grant commands from Step 4b. Grants may need to be re-applied for each new table you create. Replace `<TABLE_NAME>` with the table causing the error:
+> 2. **Lake Formation grants** — re-run the grant commands from Step 3c. Grants may need to be re-applied for each new table you create. Replace `<TABLE_NAME>` with the table causing the error:
 > ```
 > aws lakeformation grant-permissions \
->   --principal "$PRINCIPAL" \
+>   --principal '{"DataLakePrincipalIdentifier": "arn:aws:iam::<AccountId>:role/<YOUR_ROLE_NAME>"}' \
 >   --resource '{"Table": {"CatalogId": "$CATALOG_ID", "DatabaseName": "poc_data", "Name": "<TABLE_NAME>"}}' \
 >   --permissions SELECT INSERT DELETE ALTER DROP \
 >   --permissions-with-grant-option SELECT INSERT DELETE ALTER DROP \
@@ -609,7 +621,7 @@ In the AWS Console, navigate to **CloudWatch** → **Metrics** → **S3 Tables**
 
 > **Note:** These metrics only appear after compaction has actually run. If no metrics are visible yet, compaction has not triggered. This is expected — S3 Tables compaction runs as a background process and may take several hours. For very small datasets, compaction may not trigger until more files accumulate. Check back later or use the maintenance dashboard query in step 3g to monitor file count changes in the meantime.
 
-> **Tip:** The maintenance dashboard query in step 3g gives you immediate visibility without waiting. Run it a few times over the course of your PoC to see the progression. With a small dataset (10 rows), the "Data scanned" difference will be negligible — the key indicator at this scale is the **file count reduction** in step 3d. To demonstrate a more pronounced performance improvement, step 3k provides instructions to create one thousand inserts. S3 Tables compaction typically runs within a few hours and is most impactful when many small files accumulate.
+> **Tip:** The maintenance dashboard query in step 3g gives you immediate visibility without waiting. Run it a few times over the course of your PoC to see the progression. With a small dataset (10 rows), the "Data scanned" difference will be negligible — the key indicator at this scale is the **file count reduction** in step 3d. For a more pronounced performance improvement, repeat step 3c with hundreds of inserts. S3 Tables compaction typically runs within a few hours and is most impactful when many small files accumulate.
 
 **3j. (Optional) Configure sort or z-order compaction:**
 
@@ -618,7 +630,6 @@ Sort and z-order compaction require the sort order to be defined in the Iceberg 
 **Step 1 — Define sort order via Spark (on EC2 via SSM):**
 
 ```bash
-bash
 cd ~
 source /etc/profile.d/spark.sh
 
@@ -648,7 +659,6 @@ spark.sql("ALTER TABLE poc_data.maintenance_test WRITE ORDERED BY sensor_id ASC,
 ```
 
 Type `:q` to exit Spark.
-Type `exit` twice to return back to your local command line.
 
 **Step 2 — Enable sort or z-order compaction (from local machine or EC2):**
 
@@ -741,9 +751,9 @@ S3 Tables Intelligent-Tiering automatically moves infrequently accessed data to 
 
 ```bash
 aws s3tables put-table-bucket-storage-class \
- --table-bucket-arn $TABLE_BUCKET_ARN \
- --storage-class-configuration '{"storageClass": "INTELLIGENT_TIERING"}' \
- --region $REGION
+  --table-bucket-arn $TABLE_BUCKET_ARN \
+  --storage-class INTELLIGENT_TIERING \
+  --region $REGION
 ```
 
 Verify the change:
@@ -814,7 +824,6 @@ Note the `total_rows` value.
 Connect to the EC2 instance via SSM (Step 5) and launch a Spark shell:
 
 ```bash
-bash
 cd ~
 source /etc/profile.d/spark.sh
 
@@ -872,12 +881,11 @@ SELECT COUNT(*) AS total_rows FROM poc_data.sensor_readings;
 
 **Expected outcome:** Row counts and data match exactly across both engines. Rows inserted by Athena are visible in Spark and vice versa, with no delay or inconsistency. This confirms S3 Tables' Iceberg catalog provides a consistent view across query engines.
 
-> **Note:** Type `:q` at the `scala>` prompt to exit the Spark shell when done. Type `exit` twice to return back to your local command line.
+> **Note:** Type `:q` at the `scala>` prompt to exit the Spark shell when done.
 
 ### Scenario 4b: Query with Amazon EMR Serverless
 
-Test querying S3 Tables from an EMR Serverless application with Apache Spark. 
-> **Note:** All CLI commands in this scenario are run from your **local machine** (not the EC2 instance), since EMR Serverless is a fully managed service.
+Test querying S3 Tables from an EMR Serverless application with Apache Spark. All CLI commands in this scenario are run from your **local machine** (not the EC2 instance), since EMR Serverless is a fully managed service.
 
 **4b-1. Create an IAM role for EMR Serverless:**
 
@@ -910,65 +918,49 @@ aws iam attach-role-policy \
 
 # Attach S3 access (for scripts and logs bucket)
 aws iam put-role-policy \
- --role-name s3-tables-poc-emr-serverless \
- --policy-name S3Access \
- --policy-document "{
-   \"Version\": \"2012-10-17\",
-   \"Statement\": [
-     {
-       \"Effect\": \"Allow\",
-       \"Action\": [\"s3:GetObject\", \"s3:PutObject\", \"s3:ListBucket\"],
-       \"Resource\": [\"arn:aws:s3:::$RESULTS_BUCKET\", \"arn:aws:s3:::$RESULTS_BUCKET/*\"]
-     }
-   ]
- }"
+  --role-name s3-tables-poc-emr-serverless \
+  --policy-name S3Access \
+  --policy-document "{
+    \"Version\": \"2012-10-17\",
+    \"Statement\": [
+      {
+        \"Effect\": \"Allow\",
+        \"Action\": [\"s3:GetObject\", \"s3:PutObject\", \"s3:ListBucket\"],
+        \"Resource\": [\"arn:aws:s3:::$RESULTS_BUCKET\", \"arn:aws:s3:::$RESULTS_BUCKET/*\"]
+      }
+    ]
+  }"
 
 # Note the role ARN from the output — you'll need it in step 4b-4
 ```
 
-**4b-2. Get your private subnet and security group IDs**
+Replace `$RESULTS_BUCKET` with the bucket name from your stack outputs.
 
-```bash
-SUBNET_ID=$(aws ec2 describe-subnets \
- --filters "Name=tag:aws:cloudformation:stack-name,Values=s3-tables-poc" "Name=tag:Name,Values=*private*" \
- --query 'Subnets[0].SubnetId' --output text --region $REGION)
-
-SG_ID=$(aws ec2 describe-security-groups \
- --filters "Name=tag:aws:cloudformation:stack-name,Values=s3-tables-poc" "Name=tag:Name,Values=*ec2-sg*" \
- --query 'SecurityGroups[0].GroupId' --output text --region $REGION)
-
-echo "Subnet: $SUBNET_ID, SG: $SG_ID"
-```
-
-**4b-3. Create an EMR Serverless application:**
+**4b-2. Create an EMR Serverless application:**
 
 ```bash
 aws emr-serverless create-application \
- --release-label emr-7.5.0 \
- --type SPARK \
- --name s3-tables-poc \
- --network-configuration "{
-   \"subnetIds\": [\"$SUBNET_ID\"],
-   \"securityGroupIds\": [\"$SG_ID\"]
- }" \
- --region $REGION
+  --release-label emr-7.5.0 \
+  --type SPARK \
+  --name s3-tables-poc \
+  --region $REGION
 ```
 
 Note the `applicationId` from the output.
 
 > **Note:** The application runs in the AWS-managed VPC (not your PoC VPC), which provides internet access if needed. Do not add a `--network-configuration` parameter — this would place the application in your private subnet where internet access depends on your NAT Gateway configuration.
 
-**4b-4. Create and upload a PySpark script:**
+**4b-3. Create and upload a PySpark script:**
 
 First, upload the Iceberg JARs from the EC2 instance to S3 (run from **EC2 via SSM**):
-
-> **Note:** `$RESULTS_BUCKET` and `$REGION` are not available in the SSM session. Replace them with the actual values from your Step 2 outputs, or export them first: `export RESULTS_BUCKET="<AthenaResultsBucketName>" REGION="<Region>"`
 
 ```bash
 aws s3 cp /opt/spark/jars/s3-tables-catalog-for-iceberg-runtime-0.1.8.jar s3://$RESULTS_BUCKET/staging/ --region $REGION
 aws s3 cp /opt/spark/jars/iceberg-spark-runtime-3.5_2.12-1.7.1.jar s3://$RESULTS_BUCKET/staging/ --region $REGION
 aws s3 cp /opt/spark/jars/iceberg-aws-bundle-1.7.1.jar s3://$RESULTS_BUCKET/staging/ --region $REGION
 ```
+
+> **Note:** `$RESULTS_BUCKET` and `$REGION` are not available in the SSM session. Replace them with the actual values from your Step 2 outputs, or export them first: `export RESULTS_BUCKET="<AthenaResultsBucketName>" REGION="<Region>"`
 
 Then create and upload the PySpark script (run from your **local machine**):
 
@@ -993,11 +985,10 @@ spark.stop()
 EOF
 
 # Replace <TableBucketARN> in the script with your actual ARN
-# macOS:
-sed -i '' "s|<TableBucketARN>|$TABLE_BUCKET_ARN|" /tmp/s3tables_query.py
-
 # Linux:
-#sed -i "s|<TableBucketARN>|$TABLE_BUCKET_ARN|" /tmp/s3tables_query.py
+sed -i "s|<TableBucketARN>|$TABLE_BUCKET_ARN|" /tmp/s3tables_query.py
+# macOS:
+# sed -i '' "s|<TableBucketARN>|$TABLE_BUCKET_ARN|" /tmp/s3tables_query.py
 
 # Upload to S3
 aws s3 cp /tmp/s3tables_query.py \
@@ -1005,81 +996,66 @@ aws s3 cp /tmp/s3tables_query.py \
   --region $REGION
 ```
 
-**4b-5. Submit the Spark job:**
+**4b-4. Submit the Spark job:**
+
+Replace `<applicationId>` (from step 4b-2), `<AccountId>`, and `$RESULTS_BUCKET` (from stack outputs — appears in `entryPoint`, `sparkSubmitParameters`, and `logUri`):
 
 ```bash
-# Export environmental variable for EMR IAM execution role, created at step 4b-1, and EMR Serverless application ID created at step 4b-2.
-export EXECUTION_ROLE_ARN="<ExecutionRoleARN>"
-export APPLICATION_ID="<ApplicationId>"
-
 aws emr-serverless start-job-run \
- --application-id $APPLICATION_ID \
- --execution-role-arn $EXECUTION_ROLE_ARN \
- --job-driver "{
-   \"sparkSubmit\": {
-     \"entryPoint\": \"s3://$RESULTS_BUCKET/scripts/s3tables_query.py\",
-     \"sparkSubmitParameters\": \"--jars s3://$RESULTS_BUCKET/staging/s3-tables-catalog-for-iceberg-runtime-0.1.8.jar,s3://$RESULTS_BUCKET/staging/iceberg-spark-runtime-3.5_2.12-1.7.1.jar,s3://$RESULTS_BUCKET/staging/iceberg-aws-bundle-1.7.1.jar\"
-   }
- }" \
- --configuration-overrides "{
-   \"monitoringConfiguration\": {
-     \"s3MonitoringConfiguration\": {
-       \"logUri\": \"s3://$RESULTS_BUCKET/emr-serverless-logs/\"
-     }
-   }
- }" \
- --region $REGION
+  --application-id <applicationId> \
+  --execution-role-arn arn:aws:iam::<AccountId>:role/s3-tables-poc-emr-serverless \
+  --job-driver "{
+    \"sparkSubmit\": {
+      \"entryPoint\": \"s3://$RESULTS_BUCKET/scripts/s3tables_query.py\",
+      \"sparkSubmitParameters\": \"--jars s3://$RESULTS_BUCKET/staging/s3-tables-catalog-for-iceberg-runtime-0.1.8.jar,s3://$RESULTS_BUCKET/staging/iceberg-spark-runtime-3.5_2.12-1.7.1.jar,s3://$RESULTS_BUCKET/staging/iceberg-aws-bundle-1.7.1.jar\"
+    }
+  }" \
+  --configuration-overrides "{
+    \"monitoringConfiguration\": {
+      \"s3MonitoringConfiguration\": {
+        \"logUri\": \"s3://$RESULTS_BUCKET/emr-serverless-logs/\"
+      }
+    }
+  }" \
+  --region $REGION
 ```
 
 Note the `jobRunId` from the output.
-```bash
-export JOB_RUN_ID="<jobRunId>"
-```
 
-**4b-6. Monitor the job:**
+**4b-5. Monitor the job:**
 
 ```bash
 # Check job status (repeat until state is SUCCESS or FAILED)
 aws emr-serverless get-job-run \
-  --application-id $APPLICATION_ID \
-  --job-run-id $JOB_RUN_ID \
+  --application-id <applicationId> \
+  --job-run-id <jobRunId> \
   --region $REGION \
   --query 'jobRun.state'
 ```
 
-If the jobRun state is "FAILED", run the following command for more details:
-
-```bash
-aws emr-serverless get-job-run \
- --application-id $APPLICATION_ID \
- --job-run-id $JOB_RUN_ID \
- --region $REGION \
- --query 'jobRun.stateDetails'
-```
-
-**4b-7. Review the job output:**
+**4b-6. Review the job output:**
 
 ```bash
 # List the log files
 aws s3 ls s3://$RESULTS_BUCKET/emr-serverless-logs/ --recursive
 
 # View the Spark driver stdout (contains the query results)
-aws s3 cp s3://$RESULTS_BUCKET/emr-serverless-logs/applications/$APPLICATION_ID/jobs/$JOB_RUN_ID/SPARK_DRIVER/stdout.gz - | gunzip
+aws s3 cp s3://$RESULTS_BUCKET/emr-serverless-logs/applications/<applicationId>/jobs/<jobRunId>/SPARK_DRIVER/stdout.gz - | gunzip
 ```
 
 Verify the output matches what you see when querying the same tables via Athena.
 
-**4b-8. Clean up EMR Serverless resources:**
+**4b-7. Clean up EMR Serverless resources:**
 
 ```bash
 # Stop the application
 aws emr-serverless stop-application \
-  --application-id $APPLICATION_ID \
+  --application-id <applicationId> \
   --region $REGION
 
 # Delete the application
 aws emr-serverless delete-application \
-  --application-id $APPLICATION_ID \
+  --application-id <applicationId> \
   --region $REGION
 
 # Delete the IAM role (detach policies first)
@@ -1155,47 +1131,22 @@ aws iam put-role-policy \
 
 **5b. Grant Lake Formation permissions to the Firehose role:**
 
-Before creating the Firehose stream, the Firehose role needs Lake Formation permissions to access the Glue catalog table. The IAM policy (glue:*) isn't enough — Lake Formation controls access separately.
-
 ```bash
-export ACCOUNT_ID="<your_account_ID>"
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 aws lakeformation grant-permissions \
   --principal "{\"DataLakePrincipalIdentifier\": \"arn:aws:iam::${ACCOUNT_ID}:role/s3-tables-poc-firehose\"}" \
   --resource "{\"Database\": {\"CatalogId\": \"$CATALOG_ID\", \"Name\": \"poc_data\"}}" \
   --permissions ALL \
   --region $REGION
-```
 
-```bash
 aws lakeformation grant-permissions \
   --principal "{\"DataLakePrincipalIdentifier\": \"arn:aws:iam::${ACCOUNT_ID}:role/s3-tables-poc-firehose\"}" \
   --resource "{\"Table\": {\"CatalogId\": \"$CATALOG_ID\", \"DatabaseName\": \"poc_data\", \"Name\": \"sensor_readings\"}}" \
   --permissions ALL \
   --permissions-with-grant-option ALL \
   --region $REGION
-
 ```
-
-Check database grant:
-```bash
-aws lakeformation list-permissions \
- --principal "{\"DataLakePrincipalIdentifier\": \"arn:aws:iam::${ACCOUNT_ID}:role/s3-tables-poc-firehose\"}" \
- --resource-type DATABASE \
- --resource "{\"Database\": {\"CatalogId\": \"$CATALOG_ID\", \"Name\": \"poc_data\"}}" \
- --region $REGION
-```
-
-Check table grant:
-```bash
-aws lakeformation list-permissions \
- --principal "{\"DataLakePrincipalIdentifier\": \"arn:aws:iam::${ACCOUNT_ID}:role/s3-tables-poc-firehose\"}" \
- --resource-type TABLE \
- --resource "{\"Table\": {\"CatalogId\": \"$CATALOG_ID\", \"DatabaseName\": \"poc_data\", \"Name\": \"sensor_readings\"}}" \
- --region $REGION
-```
-Both should return permission entries with ALL or SELECT, INSERT, DELETE, ALTER, DROP.
-
 
 **5c. Create a Firehose delivery stream via the AWS Console:**
 
@@ -1207,37 +1158,22 @@ Both should return permission entries with ALL or SELECT, INSERT, DELETE, ALTER,
 | Source | `Direct PUT` |
 | Destination | `Apache Iceberg Tables` |
 | Firehose stream name | `s3-tables-poc-firehose` |
-| AWS Glue Data Catalog account | `Current account`|
-| AWS Region | `<your_regions>` |
-| Catalog | `s3-tables-poc-<your_account_ID>` |
+| AWS Glue catalog | `s3tablescatalog` |
+| AWS Glue database | `poc_data` |
+| Destination table | `sensor_readings` |
+| Unique keys | `id` |
 
-Destination Configuration:
-```bash
-[
- {
-   "DestinationDatabaseName": "poc_data",
-   "DestinationTableName": "sensor_readings",
-   "UniqueKeys": [
-     "id"
-   ],
-   "S3ErrorOutputPrefix": "firehose-errors/"
- }
-]
-```
-
-3. Under **Buffer hints**, set:
-   - **Buffer size:** `1` MB
-   - **Buffer interval:** `60` seconds (minimum, for faster PoC testing)
+3. Under **Service access**, select the IAM role `s3-tables-poc-firehose` (created in step 5a).
 
 4. Under **S3 backup settings**, configure:
    - **S3 backup bucket:** `s3-tables-poc-athena-results-<AccountId>`
    - **S3 backup bucket prefix:** `firehose-backup/`
 
-5. Under **Service access**, select the IAM role `s3-tables-poc-firehose`. If it doesn't exist, repeat step 5a.
-
+5. Under **Buffer conditions**, set:
+   - **Buffer size:** `1` MB
+   - **Buffer interval:** `60` seconds (minimum, for faster PoC testing)
 
 6. Click **Create Firehose stream**.
-
 
 **5d. Send test records:**
 
