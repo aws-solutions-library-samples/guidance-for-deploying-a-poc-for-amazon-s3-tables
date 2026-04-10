@@ -66,6 +66,8 @@ Using this Guidance, you can quickly deploy a PoC environment that allows you to
 
 ## Architecture
 
+![S3 Tables PoC Architecture Diagram](s3tablespoc-architecture-diagram.drawio.png)
+
 The CloudFormation template deploys the following architecture:
 
 ```
