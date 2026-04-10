@@ -70,38 +70,6 @@ Using this Guidance, you can quickly deploy a PoC environment that allows you to
 
 The CloudFormation template deploys the following architecture:
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                        VPC                              │
-│  ┌───────────────────────────────────────────────────┐  │
-│  │              Private Subnet                       │  │
-│  │  ┌──────────────┐                                 │  │
-│  │  │  EC2 Instance│ ◄── SSM Session Manager         │  │
-│  │  │  (Test Host) │     (no public IP, no SSH)      │  │
-│  │  └──────┬───────┘                                 │  │
-│  └─────────┼─────────────────────────────────────────┘  │
-│            │                                            │
-│  ┌─────────┴─────────────────────────────────────────┐  │
-│  │  VPC Endpoints                                    │  │
-│  │  S3 (Gateway) · S3 Tables · SSM · SSM Messages    │  │
-│  │  EC2 Messages · Glue · Athena                     │  │
-│  └───────────────────────────────────────────────────┘  │
-└────────────┼────────────────────────────────────────────┘
-             │
-             ▼
-┌────────────────────────┐    ┌──────────────────────────┐
-│  Amazon S3 Tables      │◄──►│  AWS Glue Data Catalog   │
-│  (Table Bucket)        │    │  (SageMaker Lakehouse    │
-│  - Namespace           │    │   Integration)           │
-│  - Iceberg Tables      │    └──────────┬───────────────┘
-└────────────────────────┘               │
-                                         ▼
-                              ┌──────────────────────┐
-                              │   Amazon Athena      │
-                              │   (Query Workgroup)  │
-                              └──────────────────────┘
-```
-
 1. An EC2 instance is deployed in a **private subnet** with no public IP. Access is via AWS Systems Manager Session Manager.
 2. **VPC endpoints** provide private connectivity to AWS services (S3, S3 Tables, SSM, Glue, Athena) — no NAT Gateway or internet gateway required.
 3. An S3 table bucket is created with a default namespace for organizing Iceberg tables.
