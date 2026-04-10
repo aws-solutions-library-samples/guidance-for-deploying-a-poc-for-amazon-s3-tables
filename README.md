@@ -46,7 +46,7 @@ Using this Guidance, you can quickly deploy a PoC environment that allows you to
 ### Target Use Cases
 
 - Data lake analytics with Apache Iceberg
-- Streaming data ingestion and analytics
+- Streaming and batch data ingestion and analytics
 - Data warehouse offloading to open table formats
 - Multi-engine analytics (Athena, Redshift, EMR Serverless, Spark)
 
