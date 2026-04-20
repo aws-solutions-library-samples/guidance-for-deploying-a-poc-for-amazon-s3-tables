@@ -83,6 +83,76 @@
 
 ---
 
+## Publication Format (Target: aws-solutions-library-samples)
+
+Reference: https://github.com/aws-solutions-library-samples/deploy-a-poc-of-aws-backup
+
+### Required Repo Structure
+
+```
+assets/
+  code/
+    s3-tables-poc.yaml          ← CloudFormation template
+  images/
+    s3tablespoc-architecture-diagram.drawio.png
+deployment/                     ← (placeholder for future deployment docs)
+source/                         ← (placeholder for future source code)
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+LICENSE                         ← MIT-0
+PrescriptiveGuidance_S3Tables.md  ← Deep-dive companion (extracted from SME Guidance)
+README.md
+threat-model.md
+```
+
+### README Sections (required order)
+
+1. Overview (business case, what it deploys, target use cases, services table, cost)
+2. Architecture (diagram + description)
+3. Prerequisites
+4. Deployment Steps
+5. Deployment Validation (explicit "verify CREATE_COMPLETE" section)
+6. PoC Methodology (numbered steps + fillable success criteria matrix)
+7. Running the Guidance / Test Scenarios
+8. Next Steps (themes for deeper exploration after baseline)
+9. Cleanup
+10. Notices
+
+### Companion Document: PrescriptiveGuidance_S3Tables.md
+
+Extract from README into a deep-dive doc with numbered sections:
+- Namespace organization
+- Compaction strategy (binpack, sort, z-order, auto)
+- Snapshot and file lifecycle management
+- Intelligent-Tiering optimization
+- Security (IAM-first, optional LF)
+- S3 Tables vs Self-Managed Iceberg (comparison + decision framework)
+
+README SME Guidance section becomes a summary with links to the companion doc sections.
+
+### Cost Section Requirements
+
+- Per-service table with: service, dimensions, example sizing, example monthly cost
+- Pricing links to official pages
+- "What drives cost" explanation
+- Important cost considerations (what continues to charge when idle)
+
+### Success Criteria Matrix
+
+Provide a fillable matrix (like the Backup PoC) that customers populate during testing:
+- Workload configuration table
+- S3 Tables configuration table (compaction strategy, snapshot policy, IT enabled)
+- Functional testing outcomes table
+- Performance observations table
+
+### Community Files
+
+- `CODE_OF_CONDUCT.md` — standard Amazon Open Source
+- `CONTRIBUTING.md` — standard Amazon Open Source
+- `LICENSE` — MIT-0 (standard for AWS samples)
+
+---
+
 ## Impact Assessment
 
 ### High-impact changes (structural)
