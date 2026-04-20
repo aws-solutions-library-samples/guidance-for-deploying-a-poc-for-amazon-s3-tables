@@ -398,8 +398,8 @@ Resources:
 
           # Install Spark 3.5 (uses --packages for Iceberg runtime at launch)
           SPARK_VERSION="3.5.4"
-          curl -sL "https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-hadoop3.tgz" | tar -xz -C /opt/
-          ln -s /opt/spark-${SPARK_VERSION}-bin-hadoop3 /opt/spark
+          curl -sL "https://archive.apache.org/dist/spark/spark-${!SPARK_VERSION}/spark-${!SPARK_VERSION}-bin-hadoop3.tgz" | tar -xz -C /opt/
+          ln -s /opt/spark-${!SPARK_VERSION}-bin-hadoop3 /opt/spark
           echo 'export SPARK_HOME=/opt/spark' >> /etc/profile.d/spark.sh
           echo 'export PATH=$SPARK_HOME/bin:$PATH' >> /etc/profile.d/spark.sh
 
