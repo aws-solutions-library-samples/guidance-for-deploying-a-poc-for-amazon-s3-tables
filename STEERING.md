@@ -120,15 +120,50 @@ threat-model.md
 
 ### Companion Document: PrescriptiveGuidance_S3Tables.md
 
-Extract from README into a deep-dive doc with numbered sections:
-- Namespace organization
-- Compaction strategy (binpack, sort, z-order, auto)
-- Snapshot and file lifecycle management
-- Intelligent-Tiering optimization
-- Security (IAM-first, optional LF)
-- S3 Tables vs Self-Managed Iceberg (comparison + decision framework)
+Split guidance by depth — README has "what to do for the PoC", companion doc has "how to think about it for production".
 
-README SME Guidance section becomes a summary with links to the companion doc sections.
+**README SME Guidance (keep short — summaries + links to companion doc):**
+- Namespace organization (brief)
+- Compaction: "start with binpack" + link
+- Snapshot/file lifecycle: recommended starting config + link
+- Intelligent-Tiering: key behaviors summary + link
+- Security: IAM-first for PoC + link
+- S3 Tables vs Self-Managed: decision summary + link
+
+**PrescriptiveGuidance_S3Tables.md (deep-dive, production-oriented):**
+- Section 1: Namespace and table bucket design patterns
+- Section 2: Compaction strategies in depth
+  - When binpack is sufficient (most workloads)
+  - When to use sort (single-column filter patterns, time-series)
+  - When to use z-order (multi-column filter patterns)
+  - Target file size tuning
+  - How auto strategy selects between them
+  - Interaction with Intelligent-Tiering (only compacts FA tier)
+- Section 3: Snapshot and file lifecycle management
+  - Retention tuning (minSnapshots, maxAge, unreferencedDays)
+  - Delete file accumulation on cold data
+  - Balancing time travel needs vs storage cost
+- Section 4: Intelligent-Tiering optimization
+  - Tier transition mechanics (FA → IA → AIA)
+  - Compaction interaction (FA-only processing)
+  - When to enable vs stay on S3 Standard
+  - Cost projection methodology
+- Section 5: Replication
+  - Cross-region table bucket replication
+  - Disaster recovery patterns
+  - Consistency considerations
+- Section 6: Security and access control
+  - IAM resource-based policies (table bucket + table level)
+  - When to add Lake Formation (Athena fine-grained, multi-team)
+  - VPC endpoint policies for network-level control
+  - Cross-account access patterns
+- Section 7: S3 Tables vs Self-Managed Iceberg
+  - Detailed comparison matrix
+  - Decision framework
+  - Hybrid approach (some tables managed, some self-managed)
+  - Migration path from self-managed to S3 Tables
+
+**Trigger to create the companion doc:** When README SME Guidance exceeds ~150 lines or any section above needs to be written. For now, keep as a planned structure.
 
 ### Cost Section Requirements
 
