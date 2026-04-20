@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: "(SO9XXX) - Guidance for Deploying a PoC for Amazon S3 Tables. Template deploys a VPC with public and private subnets (NAT Gateway for internet access, VPC endpoints for AWS services), EC2 instance (SSM access), S3 table bucket, Athena workgroup, and required IAM roles."
+Description: "(SO9XXX) - Guidance for Deploying a PoC for Amazon S3 Tables. Deploys VPC (private subnet + NAT Gateway + VPC endpoints), EC2 instance (SSM access), S3 table bucket, Athena workgroup, and IAM roles. No Lake Formation required."
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -19,18 +19,18 @@ Parameters:
     Type: String
     Default: t3.xlarge
     AllowedValues: [t3.large, t3.xlarge, t3.2xlarge, m5.xlarge, m5.2xlarge]
-    Description: EC2 instance type for the test host.
+    Description: EC2 instance type for the Spark test host.
 
   TableBucketName:
     Type: String
     Default: s3-tables-poc
-    Description: Name for the S3 table bucket.
+    Description: Name for the S3 table bucket (account ID appended automatically).
     AllowedPattern: '[a-z0-9][a-z0-9\-]{1,61}[a-z0-9]'
 
   DefaultNamespace:
     Type: String
     Default: poc_data
-    Description: Default namespace to create in the table bucket.
+    Description: Default namespace created in the table bucket.
 
 Resources:
 
@@ -46,18 +46,27 @@ Resources:
         - Key: Name
           Value: !Sub "${AWS::StackName}-vpc"
 
-  # ---- Public subnet (hosts NAT Gateway only) ----
-
   PublicSubnet:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
       CidrBlock: 10.0.1.0/24
-      MapPublicIpOnLaunch: true
+      MapPublicIpOnLaunch: false
       AvailabilityZone: !Select [0, !GetAZs '']
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-public-subnet"
+
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private-subnet"
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
@@ -94,8 +103,6 @@ Resources:
       SubnetId: !Ref PublicSubnet
       RouteTableId: !Ref PublicRouteTable
 
-  # ---- NAT Gateway (single AZ, PoC-appropriate) ----
-
   NATGatewayEIP:
     Type: AWS::EC2::EIP
     DependsOn: IGWAttachment
@@ -113,19 +120,6 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-nat"
-
-  # ---- Private subnet ----
-
-  PrivateSubnet:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: 10.0.2.0/24
-      MapPublicIpOnLaunch: false
-      AvailabilityZone: !Select [0, !GetAZs '']
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-private-subnet"
 
   PrivateRouteTable:
     Type: AWS::EC2::RouteTable
@@ -150,7 +144,6 @@ Resources:
 
   # ============ VPC ENDPOINTS ============
 
-  # Gateway endpoint for S3 (free)
   S3GatewayEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
@@ -160,7 +153,6 @@ Resources:
       RouteTableIds:
         - !Ref PrivateRouteTable
 
-  # Interface endpoints for SSM Session Manager
   EndpointSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -212,7 +204,6 @@ Resources:
       SecurityGroupIds:
         - !Ref EndpointSecurityGroup
 
-  # Interface endpoint for S3 Tables API
   S3TablesEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
@@ -225,7 +216,6 @@ Resources:
       SecurityGroupIds:
         - !Ref EndpointSecurityGroup
 
-  # Interface endpoint for Glue
   GlueEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
@@ -238,7 +228,6 @@ Resources:
       SecurityGroupIds:
         - !Ref EndpointSecurityGroup
 
-  # Interface endpoint for Athena
   AthenaEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
@@ -251,7 +240,7 @@ Resources:
       SecurityGroupIds:
         - !Ref EndpointSecurityGroup
 
-  # ============ SECURITY ============
+  # ============ SECURITY GROUPS ============
 
   EC2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -263,7 +252,7 @@ Resources:
           FromPort: 443
           ToPort: 443
           CidrIp: 0.0.0.0/0
-          Description: HTTPS to AWS services and internet (via NAT Gateway)
+          Description: HTTPS to AWS services and internet (Spark packages via NAT)
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
@@ -297,26 +286,31 @@ Resources:
                 Effect: Allow
                 Action:
                   - s3tables:*
-                Resource: "*"
-              - Sid: S3Access
+                Resource:
+                  - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${TableBucketName}-${AWS::AccountId}"
+                  - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${TableBucketName}-${AWS::AccountId}/*"
+              - Sid: S3DataAccess
                 Effect: Allow
                 Action:
                   - s3:GetObject
                   - s3:PutObject
+                  - s3:DeleteObject
                   - s3:ListBucket
                   - s3:GetBucketLocation
-                Resource: "*"
-              - Sid: GlueAccess
+                Resource:
+                  - !Sub "arn:aws:s3:::${AWS::StackName}-athena-results-${AWS::AccountId}"
+                  - !Sub "arn:aws:s3:::${AWS::StackName}-athena-results-${AWS::AccountId}/*"
+              - Sid: GlueCatalogAccess
                 Effect: Allow
                 Action:
+                  - glue:GetCatalog
+                  - glue:GetCatalogs
                   - glue:GetDatabase
                   - glue:GetDatabases
                   - glue:GetTable
                   - glue:GetTables
                   - glue:GetPartitions
                   - glue:BatchGetPartition
-                  - glue:GetCatalog
-                  - glue:GetCatalogs
                 Resource: "*"
               - Sid: AthenaAccess
                 Effect: Allow
@@ -325,12 +319,8 @@ Resources:
                   - athena:GetQueryExecution
                   - athena:GetQueryResults
                   - athena:GetWorkGroup
-                Resource: "*"
-              - Sid: LakeFormationAccess
-                Effect: Allow
-                Action:
-                  - lakeformation:GetDataAccess
-                Resource: "*"
+                Resource:
+                  - !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/${AWS::StackName}-workgroup"
 
   EC2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -363,10 +353,6 @@ Resources:
     Type: AWS::S3Tables::TableBucket
     Properties:
       TableBucketName: !Sub "${TableBucketName}-${AWS::AccountId}"
-
-  # Note: The s3tablescatalog federated catalog (SageMaker Lakehouse integration)
-  # is created via AWS CLI in Step 3b of the deployment guide, not in this template,
-  # due to a CloudFormation handler limitation with AWS::Glue::Catalog for S3 Tables.
 
   # ============ ATHENA ============
 
@@ -407,11 +393,16 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash -xe
-          # The instance has internet access via NAT Gateway for downloading
-          # Spark and JARs. AWS service traffic uses VPC endpoints.
-          # Java 17 and SSM agent are included in the AL2023 AMI.
+          # Install Java 17 (required for Spark)
+          dnf install -y java-17-amazon-corretto-headless
 
-          # Signal completion
+          # Install Spark 3.5 (uses --packages for Iceberg runtime at launch)
+          SPARK_VERSION="3.5.4"
+          curl -sL "https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-hadoop3.tgz" | tar -xz -C /opt/
+          ln -s /opt/spark-${SPARK_VERSION}-bin-hadoop3 /opt/spark
+          echo 'export SPARK_HOME=/opt/spark' >> /etc/profile.d/spark.sh
+          echo 'export PATH=$SPARK_HOME/bin:$PATH' >> /etc/profile.d/spark.sh
+
           echo "S3 Tables PoC instance ready" > /tmp/setup-complete.txt
       Tags:
         - Key: Name
@@ -419,11 +410,11 @@ Resources:
 
 Outputs:
   EC2InstanceId:
-    Description: EC2 Instance ID (use with SSM Session Manager to connect)
+    Description: EC2 Instance ID (use with SSM Session Manager)
     Value: !Ref EC2Instance
 
   SSMSessionCommand:
-    Description: AWS CLI command to connect to the EC2 instance via Session Manager
+    Description: CLI command to connect via Session Manager
     Value: !Sub "aws ssm start-session --target ${EC2Instance} --region ${AWS::Region}"
 
   TableBucketARN:
@@ -435,7 +426,7 @@ Outputs:
     Value: !Sub "${TableBucketName}-${AWS::AccountId}"
 
   AthenaWorkgroupName:
-    Description: Name of the Athena workgroup
+    Description: Athena workgroup name
     Value: !Ref AthenaWorkgroup
 
   AthenaResultsBucketName:
@@ -443,17 +434,9 @@ Outputs:
     Value: !Ref AthenaResultsBucket
 
   EC2RoleArn:
-    Description: ARN of the EC2 IAM role (use for Lake Formation grants)
+    Description: ARN of the EC2 IAM role
     Value: !GetAtt EC2Role.Arn
 
-  LakeFormationCatalogId:
-    Description: Catalog ID for Lake Formation grants (<AccountId>:s3tablescatalog/<TableBucketName>)
-    Value: !Sub "${AWS::AccountId}:s3tablescatalog/${TableBucketName}-${AWS::AccountId}"
-
-  DefaultNamespace:
-    Description: Default namespace for tables
-    Value: !Ref DefaultNamespace
-
   Region:
-    Description: Deployment Region
+    Description: Deployment region
     Value: !Ref AWS::Region
