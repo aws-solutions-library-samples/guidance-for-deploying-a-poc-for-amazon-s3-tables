@@ -1,339 +1,56 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: "(SO9XXX) - Guidance for Deploying a PoC for Amazon S3 Tables. Deploys VPC (private subnet + NAT Gateway + VPC endpoints), EC2 instance (SSM access), S3 table bucket, Athena workgroup, and IAM roles. No Lake Formation required."
+Description: "(SO9XXX) - Guidance for Deploying a PoC for Amazon S3 Tables. Deploys S3 table bucket, Athena workgroup, Firehose support, and optionally a SageMaker notebook for Spark/PyIceberg testing."
 
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
       - Label:
-          default: EC2 Configuration
-        Parameters:
-          - InstanceType
-      - Label:
           default: S3 Tables Configuration
         Parameters:
           - TableBucketName
-          - DefaultNamespace
+      - Label:
+          default: Notebook Configuration (Optional)
+        Parameters:
+          - DeployNotebook
+          - NotebookInstanceType
 
 Parameters:
-  InstanceType:
-    Type: String
-    Default: t3.xlarge
-    AllowedValues: [t3.large, t3.xlarge, t3.2xlarge, m5.xlarge, m5.2xlarge]
-    Description: EC2 instance type for the Spark test host.
-
   TableBucketName:
     Type: String
     Default: s3-tables-poc
     Description: Name for the S3 table bucket (account ID appended automatically).
     AllowedPattern: '[a-z0-9][a-z0-9\-]{1,61}[a-z0-9]'
 
-  DefaultNamespace:
+  DeployNotebook:
     Type: String
-    Default: poc_data
-    Description: Default namespace created in the table bucket.
+    Default: "Yes"
+    AllowedValues: ["Yes", "No"]
+    Description: Deploy a SageMaker AI notebook instance with pre-configured IAM role for Spark/PyIceberg testing. Choose No if using a local IDE.
+
+  NotebookInstanceType:
+    Type: String
+    Default: ml.t3.medium
+    AllowedValues: [ml.t3.medium, ml.t3.large, ml.t3.xlarge]
+    Description: SageMaker notebook instance type (only used if DeployNotebook = Yes).
+
+Conditions:
+  CreateNotebook: !Equals [!Ref DeployNotebook, "Yes"]
 
 Resources:
 
-  # ============ NETWORKING ============
+  # ============ S3 TABLE BUCKET ============
 
-  VPC:
-    Type: AWS::EC2::VPC
+  S3TableBucket:
+    Type: AWS::S3Tables::TableBucket
     Properties:
-      CidrBlock: 10.0.0.0/16
-      EnableDnsSupport: true
-      EnableDnsHostnames: true
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-vpc"
+      TableBucketName: !Sub "${TableBucketName}-${AWS::AccountId}"
 
-  PublicSubnet:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: 10.0.1.0/24
-      MapPublicIpOnLaunch: false
-      AvailabilityZone: !Select [0, !GetAZs '']
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-public-subnet"
-
-  PrivateSubnet:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: 10.0.2.0/24
-      MapPublicIpOnLaunch: false
-      AvailabilityZone: !Select [0, !GetAZs '']
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-private-subnet"
-
-  InternetGateway:
-    Type: AWS::EC2::InternetGateway
-    Properties:
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-igw"
-
-  IGWAttachment:
-    Type: AWS::EC2::VPCGatewayAttachment
-    Properties:
-      VpcId: !Ref VPC
-      InternetGatewayId: !Ref InternetGateway
-
-  PublicRouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref VPC
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-public-rt"
-
-  PublicRoute:
-    Type: AWS::EC2::Route
-    DependsOn: IGWAttachment
-    Properties:
-      RouteTableId: !Ref PublicRouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref InternetGateway
-
-  PublicSubnetRouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PublicSubnet
-      RouteTableId: !Ref PublicRouteTable
-
-  NATGatewayEIP:
-    Type: AWS::EC2::EIP
-    DependsOn: IGWAttachment
-    Properties:
-      Domain: vpc
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-nat-eip"
-
-  NATGateway:
-    Type: AWS::EC2::NatGateway
-    Properties:
-      AllocationId: !GetAtt NATGatewayEIP.AllocationId
-      SubnetId: !Ref PublicSubnet
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-nat"
-
-  PrivateRouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref VPC
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-private-rt"
-
-  PrivateDefaultRoute:
-    Type: AWS::EC2::Route
-    Properties:
-      RouteTableId: !Ref PrivateRouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      NatGatewayId: !Ref NATGateway
-
-  PrivateSubnetRouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PrivateSubnet
-      RouteTableId: !Ref PrivateRouteTable
-
-  # ============ VPC ENDPOINTS ============
-
-  S3GatewayEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref VPC
-      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
-      VpcEndpointType: Gateway
-      RouteTableIds:
-        - !Ref PrivateRouteTable
-
-  EndpointSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Security group for VPC interface endpoints
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-          CidrIp: 10.0.0.0/16
-          Description: HTTPS from VPC
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-endpoint-sg"
-
-  SSMEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref VPC
-      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssm"
-      VpcEndpointType: Interface
-      PrivateDnsEnabled: true
-      SubnetIds:
-        - !Ref PrivateSubnet
-      SecurityGroupIds:
-        - !Ref EndpointSecurityGroup
-
-  SSMMessagesEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref VPC
-      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssmmessages"
-      VpcEndpointType: Interface
-      PrivateDnsEnabled: true
-      SubnetIds:
-        - !Ref PrivateSubnet
-      SecurityGroupIds:
-        - !Ref EndpointSecurityGroup
-
-  EC2MessagesEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref VPC
-      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ec2messages"
-      VpcEndpointType: Interface
-      PrivateDnsEnabled: true
-      SubnetIds:
-        - !Ref PrivateSubnet
-      SecurityGroupIds:
-        - !Ref EndpointSecurityGroup
-
-  S3TablesEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref VPC
-      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3tables"
-      VpcEndpointType: Interface
-      PrivateDnsEnabled: true
-      SubnetIds:
-        - !Ref PrivateSubnet
-      SecurityGroupIds:
-        - !Ref EndpointSecurityGroup
-
-  GlueEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref VPC
-      ServiceName: !Sub "com.amazonaws.${AWS::Region}.glue"
-      VpcEndpointType: Interface
-      PrivateDnsEnabled: true
-      SubnetIds:
-        - !Ref PrivateSubnet
-      SecurityGroupIds:
-        - !Ref EndpointSecurityGroup
-
-  AthenaEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref VPC
-      ServiceName: !Sub "com.amazonaws.${AWS::Region}.athena"
-      VpcEndpointType: Interface
-      PrivateDnsEnabled: true
-      SubnetIds:
-        - !Ref PrivateSubnet
-      SecurityGroupIds:
-        - !Ref EndpointSecurityGroup
-
-  # ============ SECURITY GROUPS ============
-
-  EC2SecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Security group for S3 Tables PoC EC2 instance (no inbound, SSM only)
-      VpcId: !Ref VPC
-      SecurityGroupEgress:
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-          CidrIp: 0.0.0.0/0
-          Description: HTTPS to AWS services and internet (Spark packages via NAT)
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
-          Description: HTTP for package downloads (via NAT Gateway)
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-ec2-sg"
-
-  # ============ IAM ============
-
-  EC2Role:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "${AWS::StackName}-ec2-role"
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ec2.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-      Policies:
-        - PolicyName: S3TablesAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Sid: S3TablesFullAccess
-                Effect: Allow
-                Action:
-                  - s3tables:*
-                Resource:
-                  - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${TableBucketName}-${AWS::AccountId}"
-                  - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${TableBucketName}-${AWS::AccountId}/*"
-              - Sid: S3DataAccess
-                Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:PutObject
-                  - s3:DeleteObject
-                  - s3:ListBucket
-                  - s3:GetBucketLocation
-                Resource:
-                  - !Sub "arn:aws:s3:::${AWS::StackName}-athena-results-${AWS::AccountId}"
-                  - !Sub "arn:aws:s3:::${AWS::StackName}-athena-results-${AWS::AccountId}/*"
-              - Sid: GlueCatalogAccess
-                Effect: Allow
-                Action:
-                  - glue:GetCatalog
-                  - glue:GetCatalogs
-                  - glue:GetDatabase
-                  - glue:GetDatabases
-                  - glue:GetTable
-                  - glue:GetTables
-                  - glue:GetPartitions
-                  - glue:BatchGetPartition
-                Resource: "*"
-              - Sid: AthenaAccess
-                Effect: Allow
-                Action:
-                  - athena:StartQueryExecution
-                  - athena:GetQueryExecution
-                  - athena:GetQueryResults
-                  - athena:GetWorkGroup
-                Resource:
-                  - !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/${AWS::StackName}-workgroup"
-
-  EC2InstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    Properties:
-      Roles:
-        - !Ref EC2Role
-
-  # ============ S3 (Athena Results) ============
+  # ============ ATHENA ============
 
   AthenaResultsBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "${AWS::StackName}-athena-results-${AWS::AccountId}"
+      BucketName: !Sub "s3-tables-poc-athena-results-${AWS::AccountId}"
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -347,15 +64,6 @@ Resources:
         - Key: Name
           Value: !Sub "${AWS::StackName}-athena-results"
 
-  # ============ S3 TABLE BUCKET ============
-
-  S3TableBucket:
-    Type: AWS::S3Tables::TableBucket
-    Properties:
-      TableBucketName: !Sub "${TableBucketName}-${AWS::AccountId}"
-
-  # ============ ATHENA ============
-
   AthenaWorkgroup:
     Type: AWS::Athena::WorkGroup
     Properties:
@@ -368,55 +76,194 @@ Resources:
         EnforceWorkGroupConfiguration: false
         PublishCloudWatchMetricsEnabled: true
 
-  # ============ EC2 INSTANCE ============
+  # ============ FIREHOSE SUPPORT ============
 
-  EC2Instance:
-    Type: AWS::EC2::Instance
-    DependsOn:
-      - S3GatewayEndpoint
-      - SSMEndpoint
-      - SSMMessagesEndpoint
-      - EC2MessagesEndpoint
-      - NATGateway
+  FirehoseBackupBucket:
+    Type: AWS::S3::Bucket
     Properties:
-      InstanceType: !Ref InstanceType
-      SubnetId: !Ref PrivateSubnet
-      SecurityGroupIds:
-        - !Ref EC2SecurityGroup
-      IamInstanceProfile: !Ref EC2InstanceProfile
-      ImageId: !Sub "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
-      BlockDeviceMappings:
-        - DeviceName: /dev/xvda
-          Ebs:
-            VolumeSize: 50
-            VolumeType: gp3
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash -xe
-          # Install Java 17 (required for Spark)
-          dnf install -y java-17-amazon-corretto-headless
-
-          # Install Spark 3.5 (uses --packages for Iceberg runtime at launch)
-          SPARK_VERSION="3.5.4"
-          curl -sL "https://archive.apache.org/dist/spark/spark-${!SPARK_VERSION}/spark-${!SPARK_VERSION}-bin-hadoop3.tgz" | tar -xz -C /opt/
-          ln -s /opt/spark-${!SPARK_VERSION}-bin-hadoop3 /opt/spark
-          echo 'export SPARK_HOME=/opt/spark' >> /etc/profile.d/spark.sh
-          echo 'export PATH=$SPARK_HOME/bin:$PATH' >> /etc/profile.d/spark.sh
-
-          echo "S3 Tables PoC instance ready" > /tmp/setup-complete.txt
+      BucketName: !Sub "s3-tables-poc-firehose-backup-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireBackupData
+            Status: Enabled
+            ExpirationInDays: 7
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-test-host"
+          Value: !Sub "${AWS::StackName}-firehose-backup"
+
+  FirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-firehose-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: FirehoseS3TablesAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: S3TablesWrite
+                Effect: Allow
+                Action:
+                  - s3tables:GetTableData
+                  - s3tables:PutTableData
+                  - s3tables:GetTable
+                  - s3tables:GetTableMetadataLocation
+                  - s3tables:UpdateTableMetadataLocation
+                  - s3tables:GetNamespace
+                  - s3tables:GetTableBucket
+                Resource:
+                  - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${TableBucketName}-${AWS::AccountId}"
+                  - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${TableBucketName}-${AWS::AccountId}/*"
+              - Sid: GlueCatalogAccess
+                Effect: Allow
+                Action:
+                  - glue:GetTable
+                  - glue:GetDatabase
+                  - glue:GetDatabases
+                  - glue:GetCatalog
+                  - glue:GetPartitions
+                  - glue:BatchGetPartition
+                  - glue:UpdateTable
+                Resource: "*"
+              - Sid: FirehoseBackupBucket
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                  - s3:AbortMultipartUpload
+                Resource:
+                  - !Sub "arn:aws:s3:::s3-tables-poc-firehose-backup-${AWS::AccountId}"
+                  - !Sub "arn:aws:s3:::s3-tables-poc-firehose-backup-${AWS::AccountId}/*"
+              - Sid: CloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:PutLogEvents
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/firehose/${AWS::StackName}-stream:*"
+
+  # ============ SAGEMAKER NOTEBOOK (CONDITIONAL) ============
+
+  NotebookRole:
+    Type: AWS::IAM::Role
+    Condition: CreateNotebook
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-notebook-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sagemaker.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: NotebookS3TablesAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: S3TablesFullAccess
+                Effect: Allow
+                Action:
+                  - s3tables:*
+                Resource:
+                  - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${TableBucketName}-${AWS::AccountId}"
+                  - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${TableBucketName}-${AWS::AccountId}/*"
+              - Sid: GlueCatalogRead
+                Effect: Allow
+                Action:
+                  - glue:GetCatalog
+                  - glue:GetCatalogs
+                  - glue:GetDatabase
+                  - glue:GetDatabases
+                  - glue:GetTable
+                  - glue:GetTables
+                  - glue:GetPartitions
+                  - glue:BatchGetPartition
+                Resource: "*"
+              - Sid: AthenaQuery
+                Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:GetWorkGroup
+                Resource:
+                  - !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/${AWS::StackName}-workgroup"
+              - Sid: S3AthenaResults
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub "arn:aws:s3:::s3-tables-poc-athena-results-${AWS::AccountId}"
+                  - !Sub "arn:aws:s3:::s3-tables-poc-athena-results-${AWS::AccountId}/*"
+              - Sid: CloudWatchMetrics
+                Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricStatistics
+                  - cloudwatch:GetMetricData
+                  - cloudwatch:ListMetrics
+                Resource: "*"
+              - Sid: CloudFormationDescribe
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                Resource:
+                  - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
+
+  NotebookLifecycleConfig:
+    Type: AWS::SageMaker::NotebookInstanceLifecycleConfig
+    Condition: CreateNotebook
+    Properties:
+      NotebookInstanceLifecycleConfigName: !Sub "${AWS::StackName}-lifecycle"
+      OnStart:
+        - Content:
+            Fn::Base64: |
+              #!/bin/bash
+              set -e
+              # Install PyIceberg and dependencies (AL2023 notebook uses system Python)
+              sudo -u ec2-user -i <<'EOF'
+              pip install -q "pyiceberg[s3,pyarrow]" boto3 pyarrow pandas
+              EOF
+
+  NotebookInstance:
+    Type: AWS::SageMaker::NotebookInstance
+    Condition: CreateNotebook
+    Properties:
+      NotebookInstanceName: !Sub "${AWS::StackName}-notebook"
+      InstanceType: !Ref NotebookInstanceType
+      RoleArn: !GetAtt NotebookRole.Arn
+      LifecycleConfigName: !GetAtt NotebookLifecycleConfig.NotebookInstanceLifecycleConfigName
+      PlatformIdentifier: notebook-al2023-v1
+      VolumeSizeInGB: 20
+      DirectInternetAccess: Enabled
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-notebook"
 
 Outputs:
-  EC2InstanceId:
-    Description: EC2 Instance ID (use with SSM Session Manager)
-    Value: !Ref EC2Instance
-
-  SSMSessionCommand:
-    Description: CLI command to connect via Session Manager
-    Value: !Sub "aws ssm start-session --target ${EC2Instance} --region ${AWS::Region}"
-
   TableBucketARN:
     Description: ARN of the S3 table bucket
     Value: !GetAtt S3TableBucket.TableBucketARN
@@ -433,9 +280,23 @@ Outputs:
     Description: S3 bucket for Athena query results
     Value: !Ref AthenaResultsBucket
 
-  EC2RoleArn:
-    Description: ARN of the EC2 IAM role
-    Value: !GetAtt EC2Role.Arn
+  FirehoseBackupBucketName:
+    Description: S3 bucket for Firehose error/backup records
+    Value: !Ref FirehoseBackupBucket
+
+  FirehoseRoleArn:
+    Description: IAM role ARN for Firehose delivery stream
+    Value: !GetAtt FirehoseRole.Arn
+
+  NotebookUrl:
+    Condition: CreateNotebook
+    Description: URL to open the SageMaker notebook in JupyterLab
+    Value: !Sub "https://${AWS::StackName}-notebook.notebook.${AWS::Region}.sagemaker.aws/lab"
+
+  NotebookName:
+    Condition: CreateNotebook
+    Description: SageMaker notebook instance name
+    Value: !Sub "${AWS::StackName}-notebook"
 
   Region:
     Description: Deployment region

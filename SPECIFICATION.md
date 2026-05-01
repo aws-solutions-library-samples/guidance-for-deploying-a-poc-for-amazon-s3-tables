@@ -1,55 +1,77 @@
 # Specification — Guidance for Deploying a PoC for Amazon S3 Tables
 
-> Current state snapshot of all deliverables. Updated: 2026-04-20
+> **Purpose**: Single source of truth for project scope, deliverables, and current state.
+> **Audience**: All contributors. Read before making changes.
+> **Last updated**: 2026-05-01
 
-## Deliverables Inventory
+---
 
-| # | Deliverable | File | Status |
+## 1. Project Summary
+
+Deploy a self-service PoC environment for Amazon S3 Tables, published to `aws-solutions-library-samples`. Customers deploy a CloudFormation stack, run guided test scenarios (Athena + Spark), and evaluate S3 Tables against a structured success criteria matrix.
+
+---
+
+## 2. Deliverables
+
+| # | Deliverable | Path | Status |
 |---|---|---|---|
-| 1 | README (main guide) | `README.md` | Draft — pending leader feedback |
-| 2 | CloudFormation template | `s3-tables-poc.yaml` | Draft — functional |
-| 3 | Architecture diagram | `s3tablespoc-architecture-diagram.drawio.png` | Draft |
-| 4 | Threat model | `threat-model.md` | Draft — 4-question format |
+| 1 | README (main guide) | `README.md` | Draft — updates in progress |
+| 2 | CloudFormation template | `assets/code/s3-tables-poc.yaml` | Draft — functional, aligned |
+| 3 | Architecture diagram | `assets/images/s3tablespoc-architecture-diagram.drawio.png` | Draft |
+| 4 | Threat model | `threat-model.md` | Draft — needs update |
+| 5 | Companion doc | `PrescriptiveGuidance_S3Tables.md` | Planned — not yet created |
 
-## README.md — Section Inventory
+---
 
-| Section | Lines (approx) | Summary |
-|---|---|---|
-| Overview / Business Case | ~30 | Why this guide exists, what it deploys, target use cases, services table |
-| Architecture | ~10 | Diagram reference + 6-point architecture description |
-| Cost | ~15 | Daily cost estimate table (US East, March 2026 pricing) |
-| Prerequisites | ~40 | Account permissions, CLI, SSM plugin, Lake Formation admin setup, supported regions table (35 regions) |
-| Deployment Steps (1–6) | ~150 | Stack deploy, outputs, SageMaker Lakehouse catalog, namespace + LF grants, SSM connect, first Athena table |
-| PoC Methodology | ~20 | Success criteria matrix (14 dimensions across Functionality, Performance, Integration, Security, Cost) |
-| Scenario 1: Basic Table Ops | ~50 | Insert, query, update, delete, time travel |
-| Scenario 2: Schema Evolution | ~15 | ADD COLUMNS, insert with new schema, NULL backfill |
-| Scenario 3: Automated Maintenance | ~120 | Partitioned table, 10-insert small-file generation, metadata monitoring, compaction observation, CloudWatch metrics, sort/z-order config via Spark + API, optional 1000-file generation |
-| Scenario 3c: Intelligent-Tiering | ~40 | Enable IT on table bucket, storage usage check, cost projection table, CloudWatch verification |
-| Scenario 4: Multi-Engine Access | ~60 | Athena insert → Spark read, Spark insert → Athena read |
-| Scenario 4b: EMR Serverless | ~80 | IAM role, create app, PySpark script upload, job submit, monitor, review logs, cleanup |
-| Scenario 5: Firehose Streaming | ~80 | IAM role, LF grants, console-based stream creation, 10-record CLI send, verify in Athena, troubleshooting table |
-| SME Guidance | ~80 | Table bucket design, performance optimization, security, cost optimization, S3 Tables vs self-managed comparison table, decision guide, hybrid approach |
-| Cleanup | ~30 | Delete tables/namespaces, empty buckets, delete EMR/Firehose resources, delete catalog, delete stack |
-| Notices | ~10 | Standard AWS disclaimer |
+## 3. Architecture Overview
 
-## CloudFormation Template — Resource Inventory
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ VPC (10.0.0.0/16)                                               │
+│                                                                 │
+│  ┌──────────────┐     ┌──────────────────────────────────────┐  │
+│  │ Public Subnet│     │ Private Subnet                       │  │
+│  │              │     │                                      │  │
+│  │  NAT Gateway │     │  EC2 (t3.xlarge, AL2023, SSM-only)  │  │
+│  │              │     │  ├─ Java 17 + Spark 3.5              │  │
+│  └──────┬───────┘     │  └─ --packages for Iceberg runtime  │  │
+│         │             └──────────────────────────────────────┘  │
+│         │                          │                            │
+│         │              VPC Endpoints (Interface):               │
+│         │              SSM, SSMMessages, EC2Messages,           │
+│         │              S3Tables, Glue, Athena                   │
+│         │              VPC Endpoint (Gateway): S3               │
+└─────────┼───────────────────────────┼──────────────────────────┘
+          │                           │
+          ▼                           ▼
+   Internet (Maven)         AWS Services (private)
+```
+
+**Access paths:**
+- **Athena** → Glue Data Catalog (`s3tablescatalog`) → IAM authorization
+- **Spark** → S3 Tables Iceberg REST endpoint → SigV4 (`s3tables` signing) → IAM authorization
+
+---
+
+## 4. CloudFormation Resources
 
 | Resource | Type | Notes |
 |---|---|---|
 | VPC | `AWS::EC2::VPC` | 10.0.0.0/16 |
-| PublicSubnet | `AWS::EC2::Subnet` | 10.0.1.0/24 — hosts NAT Gateway only |
-| PrivateSubnet | `AWS::EC2::Subnet` | 10.0.2.0/24 — hosts EC2 |
-| InternetGateway + Attachment | `AWS::EC2::InternetGateway` | For NAT Gateway outbound |
-| NATGateway + EIP | `AWS::EC2::NatGateway` | Single-AZ, PoC-appropriate |
-| S3 Gateway Endpoint | `AWS::EC2::VPCEndpoint` (Gateway) | Free |
-| 5× Interface Endpoints | `AWS::EC2::VPCEndpoint` (Interface) | SSM, SSMMessages, EC2Messages, S3Tables, Glue, Athena |
+| Public Subnet | `AWS::EC2::Subnet` | 10.0.1.0/24 — NAT Gateway only |
+| Private Subnet | `AWS::EC2::Subnet` | 10.0.2.0/24 — EC2 instance |
+| Internet Gateway | `AWS::EC2::InternetGateway` | For NAT Gateway outbound |
+| NAT Gateway + EIP | `AWS::EC2::NatGateway` | Single-AZ, PoC-appropriate |
+| S3 Gateway Endpoint | `AWS::EC2::VPCEndpoint` | Gateway type, free |
+| 6× Interface Endpoints | `AWS::EC2::VPCEndpoint` | SSM, SSMMessages, EC2Messages, S3Tables, Glue, Athena |
 | Endpoint Security Group | `AWS::EC2::SecurityGroup` | HTTPS from VPC CIDR |
 | EC2 Security Group | `AWS::EC2::SecurityGroup` | No inbound; outbound 443+80 |
-| EC2 Role + Instance Profile | `AWS::IAM::Role` | SSM core + S3Tables, S3, Glue, Athena, LakeFormation |
+| EC2 Role + Instance Profile | `AWS::IAM::Role` | SSM core + S3Tables, S3, Glue, Athena |
 | Athena Results Bucket | `AWS::S3::Bucket` | AES256, public access blocked |
 | S3 Table Bucket | `AWS::S3Tables::TableBucket` | Named `{param}-{AccountId}` |
 | Athena Workgroup | `AWS::Athena::WorkGroup` | CloudWatch metrics enabled |
-| EC2 Instance | `AWS::EC2::Instance` | t3.xlarge default, AL2023, 50GB gp3, private subnet |
+| EC2 Instance | `AWS::EC2::Instance` | t3.xlarge, AL2023, 50 GB gp3, private subnet |
 
 ### Parameters
 
@@ -57,35 +79,111 @@
 |---|---|---|
 | `InstanceType` | `t3.xlarge` | Allowed: t3.large/xlarge/2xlarge, m5.xlarge/2xlarge |
 | `TableBucketName` | `s3-tables-poc` | Lowercase alphanumeric + hyphens |
-| `DefaultNamespace` | `poc_data` | Not used in resources (namespace created via CLI) |
+| `DefaultNamespace` | `poc_data` | Informational only (namespace created via CLI) |
 
-### Outputs (9)
+### Outputs (8)
 
-`EC2InstanceId`, `SSMSessionCommand`, `TableBucketARN`, `TableBucketName`, `AthenaWorkgroupName`, `AthenaResultsBucketName`, `EC2RoleArn`, `LakeFormationCatalogId`, `DefaultNamespace`, `Region`
+`EC2InstanceId`, `SSMSessionCommand`, `TableBucketARN`, `TableBucketName`, `AthenaWorkgroupName`, `AthenaResultsBucketName`, `EC2RoleArn`, `Region`
 
-## Threat Model Summary
+---
 
-Uses the 4-question format (What are we building? What can go wrong? What can we do? Good enough?).
+## 5. README Structure (Required Order)
+
+| # | Section | Description |
+|---|---|---|
+| 1 | Overview | Business case, what it deploys, use cases, services table, cost |
+| 2 | Architecture | Diagram + numbered description |
+| 3 | Prerequisites | IAM permissions, CLI, SSM plugin, supported regions |
+| 4 | Deployment Steps | Stack deploy, outputs, Glue catalog, namespace, SSM connect, first table |
+| 5 | Deployment Validation | Explicit "verify CREATE_COMPLETE" section |
+| 6 | PoC Methodology | Success criteria matrix (fillable) |
+| 7 | Test Scenarios | Scenarios 1–4 (see §6 below) |
+| 8 | SME Guidance | Summaries + links to companion doc |
+| 9 | Cleanup | Ordered teardown steps |
+| 10 | Notices | Standard AWS disclaimer |
+
+---
+
+## 6. Test Scenarios
+
+| Scenario | Title | Engine | Objective |
+|---|---|---|---|
+| 1 | Basic Table Operations | Athena | CRUD + time travel |
+| 2 | Schema & Partition Evolution | Athena | ADD COLUMNS, NULL backfill, partition evolution |
+| 3 | Automated Maintenance | Athena + CLI | Compaction, snapshot mgmt, unreferenced file removal, sort/z-order, Intelligent-Tiering |
+| 4 | Multi-Engine Access | Athena + Spark | Cross-engine read/write consistency via REST endpoint |
+
+---
+
+## 6.1 Service Limits (Reference)
+
+| Limit | Value | Source |
+|---|---|---|
+| Tables per table bucket | 10,000 | Internal wiki (current) |
+| Compaction target file size | 64 MB – 512 MB | Configurable |
+| Data formats | Parquet (full support), ORC/AVRO (all features except compaction) | Internal wiki |
+| Encryption | SSE-S3 (default), SSE-KMS with customer-managed keys (April 2025) | Internal wiki |
+| Iceberg spec version | V2 (default), V3 supported but Athena-incompatible | Internal wiki |
+
+---
+
+## 7. Threat Model Summary
 
 | Threat | Severity | Mitigation |
 |---|---|---|
-| Over-privileged EC2 IAM role | Medium | Scoped to PoC operations |
-| Permissive federated catalog defaults | Medium | Documented as PoC-only |
-| Lake Formation admin misconfiguration | Medium | Warning to check existing admins |
-| EMR Serverless role + network scope | Medium | Cleanup steps documented |
-| Firehose role with broad permissions | Medium | Cleanup steps documented |
+| Over-privileged EC2 IAM role | Medium | Scoped to PoC table bucket ARN |
+| Permissive federated catalog defaults | Medium | Documented as PoC-only; production guidance provided |
 | Data exposure via Athena results | Low | Encryption + public access block |
-| Resource cost overrun | Low | Cleanup instructions provided |
+| Resource cost overrun | Low | Cleanup instructions + cost tips |
 
-## Known Gaps / Observations
+---
 
-- **UserData is a stub**: The CFN EC2 UserData only writes a completion marker. It does not install Java 17, Spark, or Iceberg JARs — but the README says it does. This is a mismatch.
-- **DefaultNamespace parameter unused**: Declared as a CFN parameter and output but never referenced in any resource. Namespace is created manually via CLI in Step 4.
-- **README says "no NAT Gateway"**: The architecture description says "no NAT Gateway or internet gateway required" but the CFN template deploys both an IGW and a NAT Gateway.
-- **README says 6 VPC endpoints**: The architecture section says 6, but the CFN template creates 7 (1 gateway + 6 interface).
-- **Scenario numbering inconsistency**: Scenario 3c (Intelligent-Tiering) is nested under Scenario 3 but uses a different naming convention than 3a–3k.
-- **Step reference mismatch**: Troubleshooting section references "Step 3c" for Lake Formation grants, but the actual grants are in Step 4b.
-- **Environment variable inconsistency**: Step 2 sets `WORKGROUP="$WORKGROUP"` (self-referencing) instead of the actual output value.
-- **CFN Description mentions public subnet**: Says "public and private subnets" which is accurate for the template but contradicts the README's "no internet gateway" claim.
-- **10 outputs listed, 9 declared**: The Outputs section header says 9 but there are actually 10 outputs in the template.
-- **Iceberg V3 mentioned in SME Guidance**: "Start with Iceberg V3 for new tables" but no scenario demonstrates V3-specific features (deletion vectors, row lineage).
+## 8. Known Gaps (To Resolve)
+
+| # | Gap | Impact | Resolution |
+|---|---|---|---|
+| 1 | Threat model references old architecture (LF, SageMaker Lakehouse, custom JARs) | Misleading | Rewrite to match current architecture |
+| 2 | `DefaultNamespace` parameter unused in CFN resources | Cosmetic | Keep as informational output or remove |
+| 3 | ~~Intelligent-Tiering contradiction~~ — FAQ stale. IT is GA. Config via S3 Tables API. | Resolved | ✅ Fixed in README Scenario 3h |
+| 4 | EMR Serverless scenario (4b) — keep or remove? | Scope decision | Pending team decision |
+| 5 | Firehose scenario (5) — keep or remove? | Scope decision | Pending team decision |
+| 6 | "Enable column statistics" — GDC offers this on S3 Tables (FAQ #20) but unclear how to enable | SME Guidance accuracy | Pending clarification |
+| 7 | Companion doc (`PrescriptiveGuidance_S3Tables.md`) not yet written | Deliverable gap | Create when SME Guidance exceeds ~150 lines |
+| 8 | ~~Performance multipliers~~ | Resolved | ✅ Removed specific numbers, using qualitative language |
+| 9 | ~~DROP TABLE via Spark~~ | Resolved | ✅ Added to Troubleshooting section |
+| 10 | ~~Cost section missing compaction/monitoring fees~~ | Resolved | ✅ Added to Cost section |
+| 11 | ~~SSE-KMS not mentioned~~ | Resolved | ✅ Added to Security Best Practices |
+| 12 | ~~Table limit (10k) not documented~~ | Resolved | ✅ Added to Service Limits table |
+
+---
+
+## 9. Publication Requirements
+
+**Target repo**: `aws-solutions-library-samples`
+**Reference**: [deploy-a-poc-of-aws-backup](https://github.com/aws-solutions-library-samples/deploy-a-poc-of-aws-backup)
+
+### Required Repo Structure
+
+```
+assets/
+  code/
+    s3-tables-poc.yaml
+  images/
+    s3tablespoc-architecture-diagram.drawio.png
+deployment/
+source/
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+LICENSE                              (MIT-0)
+PrescriptiveGuidance_S3Tables.md     (companion doc)
+README.md
+threat-model.md
+```
+
+### Community Files
+
+| File | Standard |
+|---|---|
+| `CODE_OF_CONDUCT.md` | Amazon Open Source |
+| `CONTRIBUTING.md` | Amazon Open Source |
+| `LICENSE` | MIT-0 |
