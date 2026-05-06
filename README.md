@@ -92,6 +92,8 @@ echo "Table Bucket Name: $TableBucketName"
 echo "Athena Workgroup:  $AthenaWorkgroupName"
 echo "Firehose Role:     $FirehoseRoleArn"
 echo "Backup Bucket:     $FirehoseBackupBucketName"
+
+STREAM_NAME="${STACK_NAME}-stream"
 ```
 
 ---
@@ -285,7 +287,7 @@ Create a delivery stream that writes JSON records directly to the `events` Icebe
 
 ```bash
 aws firehose create-delivery-stream \
-  --delivery-stream-name s3-tables-poc-stream \
+  --delivery-stream-name $STREAM_NAME \
   --delivery-stream-type DirectPut \
   --iceberg-destination-configuration "{
     \"RoleARN\": \"${FirehoseRoleArn}\",
@@ -309,7 +311,7 @@ Wait for the stream to become active:
 
 ```bash
 aws firehose describe-delivery-stream \
-  --delivery-stream-name s3-tables-poc-stream --region $AWS_REGION \
+  --delivery-stream-name $STREAM_NAME --region $AWS_REGION \
   --query 'DeliveryStreamDescription.DeliveryStreamStatus'
 ```
 
@@ -321,7 +323,7 @@ Send 20 sample events to validate the end-to-end streaming path:
 for i in $(seq 1 20); do
   RECORD=$(echo -n "{\"event_id\":\"stream-$(uuidgen)\",\"event_type\":\"stream_click\",\"user_id\":$((RANDOM % 100 + 1)),\"amount\":$((RANDOM % 500)).$((RANDOM % 99)),\"event_time\":\"$(date -u +%Y-%m-%dT%H:%M:%S)\",\"region\":\"us-east-1\"}" | base64)
   aws firehose put-record \
-    --delivery-stream-name s3-tables-poc-stream \
+    --delivery-stream-name $STREAM_NAME \
     --record "{\"Data\":\"${RECORD}\"}" --region $AWS_REGION
 done
 ```
@@ -456,7 +458,7 @@ Remove all resources in reverse dependency order:
 ```bash
 # 1. Delete Firehose stream (must be removed before table bucket policy)
 aws firehose delete-delivery-stream \
-  --delivery-stream-name s3-tables-poc-stream --region $AWS_REGION 2>/dev/null
+  --delivery-stream-name $STREAM_NAME --region $AWS_REGION 2>/dev/null
 
 # 2. Delete all tables (required before namespace/bucket can be deleted)
 for TABLE in $(aws s3tables list-tables --table-bucket-arn $TableBucketARN \
