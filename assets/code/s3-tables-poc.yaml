@@ -1,40 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: "(SO9XXX) - Guidance for Deploying a PoC for Amazon S3 Tables. Deploys S3 table bucket, Athena workgroup, Firehose support, and optionally a SageMaker notebook for Spark/PyIceberg testing."
-
-Metadata:
-  AWS::CloudFormation::Interface:
-    ParameterGroups:
-      - Label:
-          default: S3 Tables Configuration
-        Parameters:
-          - TableBucketName
-      - Label:
-          default: Notebook Configuration (Optional)
-        Parameters:
-          - DeployNotebook
-          - NotebookInstanceType
-
-Parameters:
-  TableBucketName:
-    Type: String
-    Default: s3-tables-poc
-    Description: Name for the S3 table bucket (account ID appended automatically).
-    AllowedPattern: '[a-z0-9][a-z0-9\-]{1,61}[a-z0-9]'
-
-  DeployNotebook:
-    Type: String
-    Default: "Yes"
-    AllowedValues: ["Yes", "No"]
-    Description: Deploy a SageMaker AI notebook instance with pre-configured IAM role for Spark/PyIceberg testing. Choose No if using a local IDE.
-
-  NotebookInstanceType:
-    Type: String
-    Default: ml.t3.medium
-    AllowedValues: [ml.t3.medium, ml.t3.large, ml.t3.xlarge]
-    Description: SageMaker notebook instance type (only used if DeployNotebook = Yes).
-
-Conditions:
-  CreateNotebook: !Equals [!Ref DeployNotebook, "Yes"]
+Description: "(SO9XXX) - Guidance for Deploying a PoC for Amazon S3 Tables. Deploys S3 table bucket, Athena workgroup, and Firehose support."
 
 Resources:
 
@@ -43,14 +8,13 @@ Resources:
   S3TableBucket:
     Type: AWS::S3Tables::TableBucket
     Properties:
-      TableBucketName: !Sub "${TableBucketName}-${AWS::AccountId}"
+      TableBucketName: !Sub "${AWS::StackName}-${AWS::AccountId}"
 
   # ============ ATHENA ============
 
   AthenaResultsBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "s3-tables-poc-athena-results-${AWS::AccountId}"
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -81,7 +45,6 @@ Resources:
   FirehoseBackupBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "s3-tables-poc-firehose-backup-${AWS::AccountId}"
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -103,7 +66,6 @@ Resources:
   FirehoseRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "${AWS::StackName}-firehose-role"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -130,8 +92,8 @@ Resources:
                   - s3tables:GetNamespace
                   - s3tables:GetTableBucket
                 Resource:
-                  - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${TableBucketName}-${AWS::AccountId}"
-                  - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${TableBucketName}-${AWS::AccountId}/*"
+                  - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${AWS::StackName}-${AWS::AccountId}"
+                  - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${AWS::StackName}-${AWS::AccountId}/*"
               - Sid: GlueCatalogAccess
                 Effect: Allow
                 Action:
@@ -142,6 +104,7 @@ Resources:
                   - glue:GetPartitions
                   - glue:BatchGetPartition
                   - glue:UpdateTable
+                  - lakeformation:GetDataAccess
                 Resource: "*"
               - Sid: FirehoseBackupBucket
                 Effect: Allow
@@ -152,8 +115,8 @@ Resources:
                   - s3:GetBucketLocation
                   - s3:AbortMultipartUpload
                 Resource:
-                  - !Sub "arn:aws:s3:::s3-tables-poc-firehose-backup-${AWS::AccountId}"
-                  - !Sub "arn:aws:s3:::s3-tables-poc-firehose-backup-${AWS::AccountId}/*"
+                  - !GetAtt FirehoseBackupBucket.Arn
+                  - !Sub "${FirehoseBackupBucket.Arn}/*"
               - Sid: CloudWatchLogs
                 Effect: Allow
                 Action:
@@ -162,107 +125,6 @@ Resources:
                   - logs:CreateLogStream
                 Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/firehose/${AWS::StackName}-stream:*"
 
-  # ============ SAGEMAKER NOTEBOOK (CONDITIONAL) ============
-
-  NotebookRole:
-    Type: AWS::IAM::Role
-    Condition: CreateNotebook
-    Properties:
-      RoleName: !Sub "${AWS::StackName}-notebook-role"
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: sagemaker.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: NotebookS3TablesAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Sid: S3TablesFullAccess
-                Effect: Allow
-                Action:
-                  - s3tables:*
-                Resource:
-                  - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${TableBucketName}-${AWS::AccountId}"
-                  - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${TableBucketName}-${AWS::AccountId}/*"
-              - Sid: GlueCatalogRead
-                Effect: Allow
-                Action:
-                  - glue:GetCatalog
-                  - glue:GetCatalogs
-                  - glue:GetDatabase
-                  - glue:GetDatabases
-                  - glue:GetTable
-                  - glue:GetTables
-                  - glue:GetPartitions
-                  - glue:BatchGetPartition
-                Resource: "*"
-              - Sid: AthenaQuery
-                Effect: Allow
-                Action:
-                  - athena:StartQueryExecution
-                  - athena:GetQueryExecution
-                  - athena:GetQueryResults
-                  - athena:GetWorkGroup
-                Resource:
-                  - !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/${AWS::StackName}-workgroup"
-              - Sid: S3AthenaResults
-                Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:PutObject
-                  - s3:ListBucket
-                  - s3:GetBucketLocation
-                Resource:
-                  - !Sub "arn:aws:s3:::s3-tables-poc-athena-results-${AWS::AccountId}"
-                  - !Sub "arn:aws:s3:::s3-tables-poc-athena-results-${AWS::AccountId}/*"
-              - Sid: CloudWatchMetrics
-                Effect: Allow
-                Action:
-                  - cloudwatch:GetMetricStatistics
-                  - cloudwatch:GetMetricData
-                  - cloudwatch:ListMetrics
-                Resource: "*"
-              - Sid: CloudFormationDescribe
-                Effect: Allow
-                Action:
-                  - cloudformation:DescribeStacks
-                Resource:
-                  - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
-
-  NotebookLifecycleConfig:
-    Type: AWS::SageMaker::NotebookInstanceLifecycleConfig
-    Condition: CreateNotebook
-    Properties:
-      NotebookInstanceLifecycleConfigName: !Sub "${AWS::StackName}-lifecycle"
-      OnStart:
-        - Content:
-            Fn::Base64: |
-              #!/bin/bash
-              set -e
-              # Install PyIceberg and dependencies (AL2023 notebook uses system Python)
-              sudo -u ec2-user -i <<'EOF'
-              pip install -q "pyiceberg[s3,pyarrow]" boto3 pyarrow pandas
-              EOF
-
-  NotebookInstance:
-    Type: AWS::SageMaker::NotebookInstance
-    Condition: CreateNotebook
-    Properties:
-      NotebookInstanceName: !Sub "${AWS::StackName}-notebook"
-      InstanceType: !Ref NotebookInstanceType
-      RoleArn: !GetAtt NotebookRole.Arn
-      LifecycleConfigName: !GetAtt NotebookLifecycleConfig.NotebookInstanceLifecycleConfigName
-      PlatformIdentifier: notebook-al2023-v1
-      VolumeSizeInGB: 20
-      DirectInternetAccess: Enabled
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-notebook"
-
 Outputs:
   TableBucketARN:
     Description: ARN of the S3 table bucket
@@ -270,7 +132,7 @@ Outputs:
 
   TableBucketName:
     Description: Name of the S3 table bucket
-    Value: !Sub "${TableBucketName}-${AWS::AccountId}"
+    Value: !Sub "${AWS::StackName}-${AWS::AccountId}"
 
   AthenaWorkgroupName:
     Description: Athena workgroup name
@@ -287,16 +149,6 @@ Outputs:
   FirehoseRoleArn:
     Description: IAM role ARN for Firehose delivery stream
     Value: !GetAtt FirehoseRole.Arn
-
-  NotebookUrl:
-    Condition: CreateNotebook
-    Description: URL to open the SageMaker notebook in JupyterLab
-    Value: !Sub "https://${AWS::StackName}-notebook.notebook.${AWS::Region}.sagemaker.aws/lab"
-
-  NotebookName:
-    Condition: CreateNotebook
-    Description: SageMaker notebook instance name
-    Value: !Sub "${AWS::StackName}-notebook"
 
   Region:
     Description: Deployment region
