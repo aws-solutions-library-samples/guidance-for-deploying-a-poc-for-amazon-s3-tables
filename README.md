@@ -144,7 +144,7 @@ Next, register the catalog as an Athena data source so it appears in the Athena 
 
 ```bash
 aws athena create-data-catalog \
-  --name s3tables-poc \
+  --name $TableBucketName \
   --type GLUE \
   --parameters catalog-id=s3tablescatalog/$TableBucketName \
   --region $AWS_REGION
@@ -170,7 +170,7 @@ Open the Athena console and configure your query editor:
 
 1. Navigate to the [Athena Query Editor](https://console.aws.amazon.com/athena/home#/query-editor)
 2. Select the workgroup from the stack outputs (`AthenaWorkgroupName`)
-3. In the **Data source** dropdown, select `s3tables-poc`
+3. In the **Data source** dropdown, select `s3-tables-poc-<account-id>` (your `$TableBucketName`)
 4. Under **Database**, select `poc_data`
 
 Once the catalog is selected, queries don't need the catalog prefix. Run the following queries one at a time:
@@ -227,17 +227,18 @@ This step validates that PyIceberg can read/write the same tables Athena uses �
 
 **What the notebook does:**
 
-| Cell | Action | Validates |
+| Step | Action | Validates |
 |---|---|---|
-| 1–2 | Connect to S3 Tables via PyIceberg REST catalog | SigV4 auth, catalog discovery |
-| 3 | Read `customers` table (created by Athena in 1.3) | Cross-engine read (Athena → PyIceberg) |
-| 4 | Write 2 rows from PyIceberg | Cross-engine write (PyIceberg → verify via Athena) |
-| 5 | Create `events` table with day-level partitioning | Table creation via REST endpoint |
-| 6 | Generate and load 50,000 synthetic event records | Batch ingestion (5 batches of 10K) |
-| 7 | Query aggregates (by event_type, by region) | Batch load verification |
+| 1 | Connect to S3 Tables via PyIceberg REST catalog | SigV4 auth, catalog discovery |
+| 2 | Read `customers` table (created by Athena in 1.3) | Cross-engine read (Athena → PyIceberg) |
+| 3 | Write 2 rows from PyIceberg | Cross-engine write (PyIceberg → verify via Athena) |
+| 4 | Create `events` table with day-level partitioning | Table creation via REST endpoint |
+| 5 | Generate and load 50,000 synthetic event records | Batch ingestion (5 batches of 10K) |
+| 6 | Query aggregates (by event_type, by region) | Batch load verification |
+| 7 | Cross-engine verification — query via Athena | Multi-engine interoperability (PyIceberg → Athena) |
 | 8 | Inspect table metadata + maintenance job status | Observability via boto3 |
 
-After the notebook completes, verify cross-engine consistency back in the Athena query editor (with `s3tables-poc` data source and `poc_data` database selected):
+After the notebook completes, verify cross-engine consistency back in the Athena query editor (with your `$TableBucketName` data source and `poc_data` database selected):
 
 ```sql
 SELECT event_type, count(*) as cnt FROM events
@@ -328,7 +329,7 @@ for i in $(seq 1 20); do
 done
 ```
 
-Wait 1–2 minutes for Firehose to buffer and commit, then verify in the Athena console (with `s3tables-poc` data source and `poc_data` database selected):
+Wait 1–2 minutes for Firehose to buffer and commit, then verify in the Athena console (with your `$TableBucketName` data source and `poc_data` database selected):
 
 ```sql
 SELECT event_type, count(*) as cnt FROM events
@@ -344,6 +345,8 @@ WHERE event_type = 'stream_click' GROUP BY event_type
 S3 Tables automatically runs maintenance jobs (compaction, snapshot management). This phase shows how to monitor them.
 
 ### 3.1 Table Maintenance Status
+
+> **Note**: If you just deployed the PoC, maintenance jobs will show a status of `Not_Yet_Run`. S3 Tables triggers maintenance asynchronously — compaction typically runs within 1 hour of data being written. This is expected; check back later using the Follow-On Validation schedule below.
 
 1. Open the [S3 console](https://console.aws.amazon.com/s3/home) → **Table buckets**
 2. Select your table bucket → **Tables** → select `events`
@@ -377,11 +380,13 @@ These commands configure table maintenance policies and demonstrate Iceberg feat
 
 ### 4.1 Schema Evolution
 
-Iceberg supports adding columns without rewriting data. Run in the Athena console (with `s3tables-poc` data source and `poc_data` database selected):
+Iceberg supports adding columns without rewriting data. Run in the Athena console (with your `$TableBucketName` data source and `poc_data` database selected):
 
 ```sql
 ALTER TABLE customers ADD COLUMNS (phone STRING, tier STRING)
 ```
+
+> **Idempotency note**: If you get `Cannot add column, name already exists: phone`, the columns were already added in a previous run. This is safe to ignore — Iceberg does not support `IF NOT EXISTS` for `ADD COLUMNS`, so re-running this statement is expected to fail once the columns exist.
 
 ### 4.2 Snapshot Management
 
@@ -453,7 +458,9 @@ S3 Tables runs maintenance jobs asynchronously — compaction, snapshot expiry, 
 
 ## Cleanup
 
-Remove all resources in reverse dependency order:
+Remove all resources in reverse dependency order.
+
+> **Why CLI + CloudFormation?** The CloudFormation stack only manages the table bucket, Athena workgroup, IAM role, and S3 buckets. Resources created via CLI during the PoC (Firehose stream, tables, namespace, bucket policy, Glue catalog, Athena data source) live outside the stack and must be deleted via CLI first. Additionally, CloudFormation cannot delete non-empty S3 buckets, so the Athena results and Firehose backup buckets must be emptied before stack deletion.
 
 ```bash
 # 1. Delete Firehose stream (must be removed before table bucket policy)
@@ -476,7 +483,7 @@ aws s3tables delete-table-bucket-policy \
   --table-bucket-arn $TableBucketARN --region $AWS_REGION 2>/dev/null
 
 # 5. Delete Athena data source registration
-aws athena delete-data-catalog --name s3tables-poc --region $AWS_REGION 2>/dev/null
+aws athena delete-data-catalog --name $TableBucketName --region $AWS_REGION 2>/dev/null
 
 # 6. Delete Glue catalog (skip if shared with other projects)
 aws glue delete-catalog --catalog-id s3tablescatalog --region $AWS_REGION
