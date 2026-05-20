@@ -226,41 +226,19 @@ Create a managed notebook instance with credentials pre-configured — no local 
    - **Name**: `s3-tables-poc`
    - **Instance type**: `ml.t3.medium`
    - **IAM role**: Create a new role → select "Any S3 bucket" → Create role
-3. Under **Lifecycle configuration**, select "Create a new lifecycle configuration":
-   - **Name**: `s3-tables-poc-lifecycle`
-   - **Start notebook** script:
-     ```bash
-     #!/bin/bash
-     set -e
-
-     # Auto-stop after 60 minutes of inactivity
-     IDLE_TIME=3600
-     echo "#!/bin/bash
-     while true; do
-       IDLE=\$(jupyter notebook list 2>/dev/null | grep -c 'kernel')
-       if [ \"\$IDLE\" -eq 0 ]; then
-         aws sagemaker stop-notebook-instance --notebook-instance-name s3-tables-poc
-         exit 0
-       fi
-       sleep \$IDLE_TIME
-     done" > /home/ec2-user/autostop.sh
-     chmod +x /home/ec2-user/autostop.sh
-     nohup /home/ec2-user/autostop.sh &
-
-     # Install dependencies and clone repo
-     sudo -u ec2-user -i <<'EOF'
-     pip install -q "pyiceberg[s3,pyarrow]" boto3 pyarrow pandas
-     cd ~/SageMaker
-     git clone https://github.com/aws-solutions-library-samples/guidance-for-deploying-a-poc-for-amazon-s3-tables.git 2>/dev/null || true
-     EOF
-     ```
-4. Click **Create notebook instance**
-5. Once status is **InService**, click **Open JupyterLab**
+3. Click **Create notebook instance**
+4. Once status is **InService**, click **Open JupyterLab**
+5. Open a terminal in JupyterLab and run:
+   ```bash
+   pip install -q "pyiceberg[s3,pyarrow]" boto3 pyarrow pandas
+   cd ~/SageMaker
+   git clone https://github.com/aws-solutions-library-samples/guidance-for-deploying-a-poc-for-amazon-s3-tables.git
+   ```
 6. Navigate to `guidance-for-deploying-a-poc-for-amazon-s3-tables/assets/code/s3_tables_poc.ipynb`
 7. Select the **conda_python3** kernel
 8. Update `AWS_REGION` and `STACK_NAME` in the first code cell, then **Run All Cells**
 
-> **Cost**: ~$0.05/hr for `ml.t3.medium`. The lifecycle config auto-stops the instance after 60 minutes of idle time. You can also stop it manually from the SageMaker console when done.
+> **Cost**: ~$0.05/hr for `ml.t3.medium`. Stop the instance from the SageMaker console when done to avoid charges.
 
 **Option B: Local IDE (VS Code, PyCharm, JupyterLab)**
 
