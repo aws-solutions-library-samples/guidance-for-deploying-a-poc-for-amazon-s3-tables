@@ -217,9 +217,54 @@ DELETE FROM customers WHERE id = 3
 
 This step validates that PyIceberg can read/write the same tables Athena uses — confirming true multi-engine interoperability via the S3 Tables REST endpoint.
 
-**Run the notebook:**
+**Option A: SageMaker AI Notebook (recommended for PoC)**
 
-1. Open `assets/code/s3_tables_poc.ipynb` in any Python environment (VS Code, PyCharm, JupyterLab)
+Create a managed notebook instance with credentials pre-configured — no local setup needed:
+
+1. Open the [SageMaker console](https://console.aws.amazon.com/sagemaker/home#/notebook-instances/create)
+2. Configure the instance:
+   - **Name**: `s3-tables-poc`
+   - **Instance type**: `ml.t3.medium`
+   - **IAM role**: Create a new role → select "Any S3 bucket" → Create role
+3. Under **Lifecycle configuration**, select "Create a new lifecycle configuration":
+   - **Name**: `s3-tables-poc-lifecycle`
+   - **Start notebook** script:
+     ```bash
+     #!/bin/bash
+     set -e
+
+     # Auto-stop after 60 minutes of inactivity
+     IDLE_TIME=3600
+     echo "#!/bin/bash
+     while true; do
+       IDLE=\$(jupyter notebook list 2>/dev/null | grep -c 'kernel')
+       if [ \"\$IDLE\" -eq 0 ]; then
+         aws sagemaker stop-notebook-instance --notebook-instance-name s3-tables-poc
+         exit 0
+       fi
+       sleep \$IDLE_TIME
+     done" > /home/ec2-user/autostop.sh
+     chmod +x /home/ec2-user/autostop.sh
+     nohup /home/ec2-user/autostop.sh &
+
+     # Install dependencies and clone repo
+     sudo -u ec2-user -i <<'EOF'
+     pip install -q "pyiceberg[s3,pyarrow]" boto3 pyarrow pandas
+     cd ~/SageMaker
+     git clone https://github.com/aws-solutions-library-samples/guidance-for-deploying-a-poc-for-amazon-s3-tables.git 2>/dev/null || true
+     EOF
+     ```
+4. Click **Create notebook instance**
+5. Once status is **InService**, click **Open JupyterLab**
+6. Navigate to `guidance-for-deploying-a-poc-for-amazon-s3-tables/assets/code/s3_tables_poc.ipynb`
+7. Select the **conda_python3** kernel
+8. Update `AWS_REGION` and `STACK_NAME` in the first code cell, then **Run All Cells**
+
+> **Cost**: ~$0.05/hr for `ml.t3.medium`. The lifecycle config auto-stops the instance after 60 minutes of idle time. You can also stop it manually from the SageMaker console when done.
+
+**Option B: Local IDE (VS Code, PyCharm, JupyterLab)**
+
+1. Open `assets/code/s3_tables_poc.ipynb` in your preferred environment
 2. Install dependencies: `pip install "pyiceberg[s3,pyarrow]" boto3 pyarrow pandas`
 3. Ensure AWS credentials are active (`aws sts get-caller-identity` should return your account)
 4. Update the `AWS_REGION` and `STACK_NAME` variables in the first code cell
@@ -463,6 +508,11 @@ Remove all resources in reverse dependency order.
 > **Why CLI + CloudFormation?** The CloudFormation stack only manages the table bucket, Athena workgroup, IAM role, and S3 buckets. Resources created via CLI during the PoC (Firehose stream, tables, namespace, bucket policy, Glue catalog, Athena data source) live outside the stack and must be deleted via CLI first. Additionally, CloudFormation cannot delete non-empty S3 buckets, so the Athena results and Firehose backup buckets must be emptied before stack deletion.
 
 ```bash
+# 0. Delete SageMaker notebook (if created in Phase 1.4 Option A)
+aws sagemaker stop-notebook-instance --notebook-instance-name s3-tables-poc --region $AWS_REGION 2>/dev/null
+aws sagemaker wait notebook-instance-stopped --notebook-instance-name s3-tables-poc --region $AWS_REGION 2>/dev/null
+aws sagemaker delete-notebook-instance --notebook-instance-name s3-tables-poc --region $AWS_REGION 2>/dev/null
+
 # 1. Delete Firehose stream (must be removed before table bucket policy)
 aws firehose delete-delivery-stream \
   --delivery-stream-name $STREAM_NAME --region $AWS_REGION 2>/dev/null
