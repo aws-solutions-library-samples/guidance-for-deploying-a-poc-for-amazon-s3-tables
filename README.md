@@ -241,7 +241,7 @@ Then create the notebook instance:
 2. Configure the instance:
    - **Name**: `s3-tables-poc`
    - **Instance type**: `ml.t3.medium`
-   - **IAM role**: Select "Enter a custom IAM role ARN" → paste `arn:aws:iam::<account-id>:role/${STACK_NAME}-notebook-role`
+   - **IAM role**: Select `s3-tables-poc-notebook-role` from the dropdown
 3. Click **Create notebook instance**
 4. Once status is **InService**, click **Open JupyterLab**
 5. Upload `assets/code/s3_tables_poc.ipynb` from this repo into JupyterLab (drag and drop or use the Upload button)
