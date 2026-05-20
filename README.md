@@ -322,10 +322,10 @@ aws firehose describe-delivery-stream \
 
 ### 2.2 Send Test Records
 
-Send 20 sample events to validate the end-to-end streaming path:
+Send 50 sample events to validate the end-to-end streaming path:
 
 ```bash
-for i in $(seq 1 20); do
+for i in $(seq 1 50); do
   RECORD=$(echo -n "{\"event_id\":\"stream-$(uuidgen)\",\"event_type\":\"stream_click\",\"user_id\":$((RANDOM % 100 + 1)),\"amount\":$((RANDOM % 500)).$((RANDOM % 99)),\"event_time\":\"$(date -u +%Y-%m-%dT%H:%M:%S)\",\"region\":\"us-east-1\"}" | base64)
   aws firehose put-record \
     --delivery-stream-name $STREAM_NAME \
@@ -333,14 +333,43 @@ for i in $(seq 1 20); do
 done
 ```
 
-Wait 1–2 minutes for Firehose to buffer and commit, then verify in the Athena console (with your `$TableBucketName` data source and `poc_data` database selected):
+### 2.3 Verify Stream Ingestion
+
+Wait 1–2 minutes for Firehose to buffer and commit, then run these queries in the Athena console (with your `$TableBucketName` data source and `poc_data` database selected):
+
+**Count streamed records:**
 
 ```sql
-SELECT event_type, count(*) as cnt FROM events
-WHERE event_type = 'stream_click' GROUP BY event_type
+SELECT event_type, count(*) as cnt, round(sum(amount),2) as total_amount
+FROM events
+WHERE event_type = 'stream_click'
+GROUP BY event_type
 ```
 
-> If no results appear, check the backup bucket for failed records: `aws s3 ls s3://$FirehoseBackupBucketName/ --recursive`
+**Time-series query — verify event timestamps from the stream:**
+
+```sql
+SELECT date_trunc('minute', event_time) as minute,
+       count(*) as events_per_minute,
+       round(avg(amount),2) as avg_amount
+FROM events
+WHERE event_type = 'stream_click'
+GROUP BY date_trunc('minute', event_time)
+ORDER BY minute DESC
+```
+
+**Combined view — compare batch (PyIceberg) vs stream (Firehose) ingestion:**
+
+```sql
+SELECT event_type, count(*) as cnt, round(sum(amount),2) as total
+FROM events
+GROUP BY event_type
+ORDER BY cnt DESC
+```
+
+**Expected**: ~50 `stream_click` records from Firehose alongside ~50,000 records from the PyIceberg batch load — confirms both ingestion paths write to the same Iceberg table.
+
+> If no `stream_click` results appear after 2 minutes, check the backup bucket for failed records: `aws s3 ls s3://$FirehoseBackupBucketName/ --recursive`
 
 ---
 
