@@ -286,36 +286,7 @@ GROUP BY event_type ORDER BY cnt DESC
 
 This phase validates real-time data ingestion via Amazon Data Firehose writing directly to S3 Tables in Iceberg format.
 
-### 2.1 Grant Firehose Access
-
-The Firehose role (created by the stack) needs a resource-based policy on the table bucket to write data:
-
-```bash
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-
-aws s3tables put-table-bucket-policy \
-  --table-bucket-arn $TableBucketARN \
-  --resource-policy "{
-    \"Version\": \"2012-10-17\",
-    \"Statement\": [{
-      \"Sid\": \"FirehoseAccess\",
-      \"Effect\": \"Allow\",
-      \"Principal\": { \"AWS\": \"${FirehoseRoleArn}\" },
-      \"Action\": [
-        \"s3tables:GetTableData\", \"s3tables:PutTableData\",
-        \"s3tables:GetTable\", \"s3tables:GetTableMetadataLocation\",
-        \"s3tables:UpdateTableMetadataLocation\",
-        \"s3tables:GetNamespace\", \"s3tables:GetTableBucket\"
-      ],
-      \"Resource\": [
-        \"arn:aws:s3tables:${AWS_REGION}:${ACCOUNT_ID}:bucket/${TableBucketName}\",
-        \"arn:aws:s3tables:${AWS_REGION}:${ACCOUNT_ID}:bucket/${TableBucketName}/*\"
-      ]
-    }]
-  }" --region $AWS_REGION
-```
-
-### 2.2 Create Firehose Stream
+### 2.1 Create Firehose Stream
 
 Create a delivery stream that writes JSON records directly to the `events` Iceberg table. The `CatalogARN` must reference the bucket-level sub-catalog:
 
@@ -349,7 +320,7 @@ aws firehose describe-delivery-stream \
   --query 'DeliveryStreamDescription.DeliveryStreamStatus'
 ```
 
-### 2.3 Send Test Records
+### 2.2 Send Test Records
 
 Send 20 sample events to validate the end-to-end streaming path:
 
@@ -517,10 +488,6 @@ done
 # 3. Delete namespace
 aws s3tables delete-namespace --table-bucket-arn $TableBucketARN \
   --namespace poc_data --region $AWS_REGION
-
-# 4. Remove table bucket policy
-aws s3tables delete-table-bucket-policy \
-  --table-bucket-arn $TableBucketARN --region $AWS_REGION 2>/dev/null
 
 # 5. Delete Athena data source registration
 aws athena delete-data-catalog --name $TableBucketName --region $AWS_REGION 2>/dev/null
