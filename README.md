@@ -229,10 +229,10 @@ aws iam create-role --role-name ${STACK_NAME}-notebook-role \
   --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"sagemaker.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
 
 # Substitute stack name into policy and attach
-sed "s/\${STACK_NAME}/${STACK_NAME}/g" assets/code/notebook-role-policy.json > /tmp/notebook-policy.json
+sed "s/\${STACK_NAME}/${STACK_NAME}/g" assets/code/notebook-role-policy.json > assets/code/notebook-role-policy-resolved.json
 aws iam put-role-policy --role-name ${STACK_NAME}-notebook-role \
   --policy-name S3TablesNotebookAccess \
-  --policy-document file:///tmp/notebook-policy.json
+  --policy-document file://assets/code/notebook-role-policy-resolved.json
 ```
 
 Then create the notebook instance:
