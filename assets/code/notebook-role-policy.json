@@ -34,7 +34,8 @@
         "glue:GetTable",
         "glue:GetDatabase",
         "glue:GetDatabases",
-        "glue:GetCatalog"
+        "glue:GetCatalog",
+        "lakeformation:GetDataAccess"
       ],
       "Resource": "*"
     },
