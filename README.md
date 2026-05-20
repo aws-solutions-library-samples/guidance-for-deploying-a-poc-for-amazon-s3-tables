@@ -228,15 +228,9 @@ Create a managed notebook instance with credentials pre-configured — no local 
    - **IAM role**: Create a new role → select "Any S3 bucket" → Create role
 3. Click **Create notebook instance**
 4. Once status is **InService**, click **Open JupyterLab**
-5. Open a terminal in JupyterLab and run:
-   ```bash
-   pip install -q "pyiceberg[s3,pyarrow]" boto3 pyarrow pandas
-   cd ~/SageMaker
-   git clone https://github.com/aws-solutions-library-samples/guidance-for-deploying-a-poc-for-amazon-s3-tables.git
-   ```
-6. Navigate to `guidance-for-deploying-a-poc-for-amazon-s3-tables/assets/code/s3_tables_poc.ipynb`
-7. Select the **conda_python3** kernel
-8. Update `AWS_REGION` and `STACK_NAME` in the first code cell, then **Run All Cells**
+5. Upload `assets/code/s3_tables_poc.ipynb` from this repo into JupyterLab (drag and drop or use the Upload button)
+6. Select the **conda_python3** kernel
+7. Update `AWS_REGION` and `STACK_NAME` in the first code cell, then **Run All Cells**
 
 > **Cost**: ~$0.05/hr for `ml.t3.medium`. Stop the instance from the SageMaker console when done to avoid charges.
 
