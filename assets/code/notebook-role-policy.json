@@ -1,0 +1,62 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "S3TablesAccess",
+      "Effect": "Allow",
+      "Action": "s3tables:*",
+      "Resource": [
+        "arn:aws:s3tables:*:*:bucket/${STACK_NAME}-*",
+        "arn:aws:s3tables:*:*:bucket/${STACK_NAME}-*/*"
+      ]
+    },
+    {
+      "Sid": "CloudFormationRead",
+      "Effect": "Allow",
+      "Action": "cloudformation:DescribeStacks",
+      "Resource": "arn:aws:cloudformation:*:*:stack/${STACK_NAME}/*"
+    },
+    {
+      "Sid": "AthenaAccess",
+      "Effect": "Allow",
+      "Action": [
+        "athena:StartQueryExecution",
+        "athena:GetQueryExecution",
+        "athena:GetQueryResults",
+        "athena:GetWorkGroup"
+      ],
+      "Resource": "arn:aws:athena:*:*:workgroup/${STACK_NAME}-workgroup"
+    },
+    {
+      "Sid": "GlueCatalogRead",
+      "Effect": "Allow",
+      "Action": [
+        "glue:GetTable",
+        "glue:GetDatabase",
+        "glue:GetDatabases",
+        "glue:GetCatalog"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AthenaResultsBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": [
+        "arn:aws:s3:::${STACK_NAME}-*athena*",
+        "arn:aws:s3:::${STACK_NAME}-*athena*/*"
+      ]
+    },
+    {
+      "Sid": "STSIdentity",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    }
+  ]
+}

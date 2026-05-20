@@ -11,7 +11,6 @@ Amazon S3 Tables provide fully managed Apache Iceberg tables with automatic comp
 | S3 Table Bucket | Managed Iceberg table storage with automatic maintenance | ~$0.10 |
 | Athena Workgroup + Results Bucket | Serverless SQL queries with a dedicated results location | ~$0.05 |
 | Firehose IAM Role + Backup Bucket | Pre-configured role for streaming ingestion; backup bucket for failed records | ~$0.01 |
-| SageMaker Notebook IAM Role | Pre-configured role for notebook access to S3 Tables, Athena, and CloudFormation | $0.00 |
 
 **Total**: ~$0.16/day (pay-per-use only — no idle compute)
 
@@ -88,15 +87,11 @@ FirehoseRoleArn=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --
 FirehoseBackupBucketName=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $AWS_REGION \
   --query 'Stacks[0].Outputs[?OutputKey==`FirehoseBackupBucketName`].OutputValue' --output text)
 
-NotebookRoleArn=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $AWS_REGION \
-  --query 'Stacks[0].Outputs[?OutputKey==`NotebookRoleArn`].OutputValue' --output text)
-
 echo "Table Bucket ARN:  $TableBucketARN"
 echo "Table Bucket Name: $TableBucketName"
 echo "Athena Workgroup:  $AthenaWorkgroupName"
 echo "Firehose Role:     $FirehoseRoleArn"
 echo "Backup Bucket:     $FirehoseBackupBucketName"
-echo "Notebook Role:     $NotebookRoleArn"
 
 STREAM_NAME="${STACK_NAME}-stream"
 ```
@@ -224,13 +219,29 @@ This step validates that PyIceberg can read/write the same tables Athena uses �
 
 **Option A: SageMaker AI Notebook (recommended for PoC)**
 
-Create a managed notebook instance with credentials pre-configured — no local setup needed:
+Create a managed notebook instance with credentials pre-configured — no local setup needed.
+
+First, create the IAM role for the notebook:
+
+```bash
+# Create the SageMaker execution role
+aws iam create-role --role-name ${STACK_NAME}-notebook-role \
+  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"sagemaker.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+
+# Substitute stack name into policy and attach
+sed "s/\${STACK_NAME}/${STACK_NAME}/g" assets/code/notebook-role-policy.json > /tmp/notebook-policy.json
+aws iam put-role-policy --role-name ${STACK_NAME}-notebook-role \
+  --policy-name S3TablesNotebookAccess \
+  --policy-document file:///tmp/notebook-policy.json
+```
+
+Then create the notebook instance:
 
 1. Open the [SageMaker console](https://console.aws.amazon.com/sagemaker/home#/notebook-instances/create)
 2. Configure the instance:
    - **Name**: `s3-tables-poc`
    - **Instance type**: `ml.t3.medium`
-   - **IAM role**: Select "Enter a custom IAM role ARN" → paste the `NotebookRoleArn` from the stack outputs
+   - **IAM role**: Select "Enter a custom IAM role ARN" → paste `arn:aws:iam::<account-id>:role/${STACK_NAME}-notebook-role`
 3. Click **Create notebook instance**
 4. Once status is **InService**, click **Open JupyterLab**
 5. Upload `assets/code/s3_tables_poc.ipynb` from this repo into JupyterLab (drag and drop or use the Upload button)
@@ -489,6 +500,8 @@ Remove all resources in reverse dependency order.
 aws sagemaker stop-notebook-instance --notebook-instance-name s3-tables-poc --region $AWS_REGION 2>/dev/null
 aws sagemaker wait notebook-instance-stopped --notebook-instance-name s3-tables-poc --region $AWS_REGION 2>/dev/null
 aws sagemaker delete-notebook-instance --notebook-instance-name s3-tables-poc --region $AWS_REGION 2>/dev/null
+aws iam delete-role-policy --role-name ${STACK_NAME}-notebook-role --policy-name S3TablesNotebookAccess 2>/dev/null
+aws iam delete-role --role-name ${STACK_NAME}-notebook-role 2>/dev/null
 
 # 1. Delete Firehose stream (must be removed before table bucket policy)
 aws firehose delete-delivery-stream \

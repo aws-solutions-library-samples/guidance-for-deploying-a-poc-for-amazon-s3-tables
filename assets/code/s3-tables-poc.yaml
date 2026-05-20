@@ -125,72 +125,6 @@ Resources:
                   - logs:CreateLogStream
                 Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/firehose/${AWS::StackName}-stream:*"
 
-  # ============ SAGEMAKER NOTEBOOK ROLE ============
-
-  NotebookRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "${AWS::StackName}-notebook-role"
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: sagemaker.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
-      Policies:
-        - PolicyName: NotebookS3TablesAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Sid: S3TablesAccess
-                Effect: Allow
-                Action:
-                  - s3tables:*
-                Resource:
-                  - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${AWS::StackName}-${AWS::AccountId}"
-                  - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${AWS::StackName}-${AWS::AccountId}/*"
-              - Sid: CloudFormationRead
-                Effect: Allow
-                Action:
-                  - cloudformation:DescribeStacks
-                Resource:
-                  - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
-              - Sid: AthenaAccess
-                Effect: Allow
-                Action:
-                  - athena:StartQueryExecution
-                  - athena:GetQueryExecution
-                  - athena:GetQueryResults
-                  - athena:GetWorkGroup
-                Resource:
-                  - !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/${AWS::StackName}-workgroup"
-              - Sid: GlueCatalogRead
-                Effect: Allow
-                Action:
-                  - glue:GetTable
-                  - glue:GetDatabase
-                  - glue:GetDatabases
-                  - glue:GetCatalog
-                Resource: "*"
-              - Sid: AthenaResultsBucket
-                Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:PutObject
-                  - s3:ListBucket
-                  - s3:GetBucketLocation
-                Resource:
-                  - !GetAtt AthenaResultsBucket.Arn
-                  - !Sub "${AthenaResultsBucket.Arn}/*"
-              - Sid: STSIdentity
-                Effect: Allow
-                Action:
-                  - sts:GetCallerIdentity
-                Resource: "*"
-
 Outputs:
   TableBucketARN:
     Description: ARN of the S3 table bucket
@@ -215,10 +149,6 @@ Outputs:
   FirehoseRoleArn:
     Description: IAM role ARN for Firehose delivery stream
     Value: !GetAtt FirehoseRole.Arn
-
-  NotebookRoleArn:
-    Description: IAM role ARN for SageMaker notebook (use when creating notebook instance)
-    Value: !GetAtt NotebookRole.Arn
 
   Region:
     Description: Deployment region
