@@ -11,6 +11,7 @@ Amazon S3 Tables provide fully managed Apache Iceberg tables with automatic comp
 | S3 Table Bucket | Managed Iceberg table storage with automatic maintenance | ~$0.10 |
 | Athena Workgroup + Results Bucket | Serverless SQL queries with a dedicated results location | ~$0.05 |
 | Firehose IAM Role + Backup Bucket | Pre-configured role for streaming ingestion; backup bucket for failed records | ~$0.01 |
+| SageMaker Notebook IAM Role | Pre-configured role for notebook access to S3 Tables, Athena, and CloudFormation | $0.00 |
 
 **Total**: ~$0.16/day (pay-per-use only — no idle compute)
 
@@ -87,11 +88,15 @@ FirehoseRoleArn=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --
 FirehoseBackupBucketName=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $AWS_REGION \
   --query 'Stacks[0].Outputs[?OutputKey==`FirehoseBackupBucketName`].OutputValue' --output text)
 
+NotebookRoleArn=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $AWS_REGION \
+  --query 'Stacks[0].Outputs[?OutputKey==`NotebookRoleArn`].OutputValue' --output text)
+
 echo "Table Bucket ARN:  $TableBucketARN"
 echo "Table Bucket Name: $TableBucketName"
 echo "Athena Workgroup:  $AthenaWorkgroupName"
 echo "Firehose Role:     $FirehoseRoleArn"
 echo "Backup Bucket:     $FirehoseBackupBucketName"
+echo "Notebook Role:     $NotebookRoleArn"
 
 STREAM_NAME="${STACK_NAME}-stream"
 ```
@@ -225,7 +230,7 @@ Create a managed notebook instance with credentials pre-configured — no local 
 2. Configure the instance:
    - **Name**: `s3-tables-poc`
    - **Instance type**: `ml.t3.medium`
-   - **IAM role**: Create a new role → select "Any S3 bucket" → Create role
+   - **IAM role**: Select "Enter a custom IAM role ARN" → paste the `NotebookRoleArn` from the stack outputs
 3. Click **Create notebook instance**
 4. Once status is **InService**, click **Open JupyterLab**
 5. Upload `assets/code/s3_tables_poc.ipynb` from this repo into JupyterLab (drag and drop or use the Upload button)
