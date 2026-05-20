@@ -532,7 +532,11 @@ ATHENA_BUCKET=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --re
 aws s3 rm s3://${ATHENA_BUCKET} --recursive --region $AWS_REGION 2>/dev/null
 aws s3 rm s3://${FirehoseBackupBucketName} --recursive --region $AWS_REGION 2>/dev/null
 
-# 8. Delete CloudFormation stack (removes table bucket, IAM roles, S3 buckets)
+# 8. Delete Athena workgroup (must be empty before CloudFormation can delete it)
+aws athena delete-work-group --work-group ${STACK_NAME}-workgroup \
+  --recursive-delete-option --region $AWS_REGION 2>/dev/null
+
+# 9. Delete CloudFormation stack (removes table bucket, IAM roles, S3 buckets)
 aws cloudformation delete-stack --stack-name $STACK_NAME --region $AWS_REGION
 aws cloudformation wait stack-delete-complete --stack-name $STACK_NAME --region $AWS_REGION
 ```
