@@ -322,11 +322,13 @@ aws firehose describe-delivery-stream \
 
 ### 2.2 Send Test Records
 
-Send 50 sample events to validate the end-to-end streaming path:
+Send 50 sample events spread across the past 24 hours to validate the end-to-end streaming path:
 
 ```bash
 for i in $(seq 1 50); do
-  RECORD=$(echo -n "{\"event_id\":\"stream-$(uuidgen)\",\"event_type\":\"stream_click\",\"user_id\":$((RANDOM % 100 + 1)),\"amount\":$((RANDOM % 500)).$((RANDOM % 99)),\"event_time\":\"$(date -u +%Y-%m-%dT%H:%M:%S)\",\"region\":\"us-east-1\"}" | base64)
+  OFFSET_SECONDS=$((RANDOM % 86400))
+  EVENT_TIME=$(date -u -d "-${OFFSET_SECONDS} seconds" +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -v-${OFFSET_SECONDS}S +%Y-%m-%dT%H:%M:%S)
+  RECORD=$(echo -n "{\"event_id\":\"stream-$(uuidgen)\",\"event_type\":\"stream_click\",\"user_id\":$((RANDOM % 100 + 1)),\"amount\":$((RANDOM % 500)).$((RANDOM % 99)),\"event_time\":\"${EVENT_TIME}\",\"region\":\"us-east-1\"}" | base64)
   aws firehose put-record \
     --delivery-stream-name $STREAM_NAME \
     --record "{\"Data\":\"${RECORD}\"}" --region $AWS_REGION
@@ -346,16 +348,16 @@ WHERE event_type = 'stream_click'
 GROUP BY event_type
 ```
 
-**Time-series query — verify event timestamps from the stream:**
+**Time-series query — verify event distribution across the past 24 hours:**
 
 ```sql
-SELECT date_trunc('minute', event_time) as minute,
-       count(*) as events_per_minute,
+SELECT date_trunc('hour', event_time) as hour,
+       count(*) as events_per_hour,
        round(avg(amount),2) as avg_amount
 FROM events
 WHERE event_type = 'stream_click'
-GROUP BY date_trunc('minute', event_time)
-ORDER BY minute DESC
+GROUP BY date_trunc('hour', event_time)
+ORDER BY hour DESC
 ```
 
 **Combined view — compare batch (PyIceberg) vs stream (Firehose) ingestion:**
