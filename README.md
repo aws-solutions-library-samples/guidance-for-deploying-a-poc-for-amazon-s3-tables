@@ -536,3 +536,5 @@ aws s3 rm s3://${FirehoseBackupBucketName} --recursive --region $AWS_REGION 2>/d
 aws cloudformation delete-stack --stack-name $STACK_NAME --region $AWS_REGION
 aws cloudformation wait stack-delete-complete --stack-name $STACK_NAME --region $AWS_REGION
 ```
+
+> **If stack deletion fails**: This usually means a resource still has dependencies (e.g., table bucket not fully empty, or a bucket with residual objects). Open the [CloudFormation console](https://console.aws.amazon.com/cloudformation), select the failed stack, click **Delete**, and check "Retain" for the blocking resource. Then manually delete that resource from its respective console (S3 or S3 Tables).
