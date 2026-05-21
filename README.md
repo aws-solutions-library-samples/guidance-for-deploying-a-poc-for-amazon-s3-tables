@@ -28,7 +28,7 @@ The user or role running this PoC needs the following permissions. The CloudForm
 | `s3:PutObject`, `s3:GetObject`, `s3:ListBucket`, `s3:DeleteObject` | Athena results bucket and Firehose backup bucket access |
 | `firehose:CreateDeliveryStream`, `firehose:PutRecord`, `firehose:DeleteDeliveryStream`, `firehose:DescribeDeliveryStream` | Create and test the streaming ingestion path |
 | `cloudformation:*` | Deploy and describe the stack |
-| `iam:CreateRole`, `iam:PutRolePolicy`, `iam:AttachRolePolicy`, `iam:PassRole` | CloudFormation creates the Firehose IAM role |
+| `iam:CreateRole`, `iam:PutRolePolicy`, `iam:PassRole` | CloudFormation creates the Firehose IAM role; CLI creates the notebook role |
 | `cloudwatch:GetMetricStatistics`, `cloudwatch:ListMetrics` | View S3 Tables maintenance metrics |
 
 **Firehose role** (created by the stack) additionally requires:
@@ -37,7 +37,7 @@ The user or role running this PoC needs the following permissions. The CloudForm
 |---|---|
 | `lakeformation:GetDataAccess` | Required for Firehose to write to S3 Tables via the Glue federated catalog. This is an IAM action — no Lake Formation admin setup or grants are needed. |
 
-> **Minimal policy for the notebook**: If running the PyIceberg notebook with a separate role, it needs `s3tables:*`, `cloudformation:DescribeStacks`, and `cloudwatch:GetMetric*`.
+> **Minimal policy for the notebook**: If running the PyIceberg notebook with a separate role, see `assets/code/notebook-role-policy.json` for the full policy (S3 Tables, Athena, Glue, Lake Formation, CloudFormation, CloudWatch, and STS permissions).
 
 ---
 
