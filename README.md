@@ -116,7 +116,7 @@ S3 Tables require a Glue federated catalog for Athena to discover and query tabl
 ```bash
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
-cat > /tmp/catalog.json << EOF
+cat > assets/code/catalog.json << EOF
 {
   "Name": "s3tablescatalog",
   "CatalogInput": {
@@ -141,7 +141,7 @@ cat > /tmp/catalog.json << EOF
 }
 EOF
 
-aws glue create-catalog --region $AWS_REGION --cli-input-json file:///tmp/catalog.json
+aws glue create-catalog --region $AWS_REGION --cli-input-json file://assets/code/catalog.json
 aws glue get-catalog --catalog-id s3tablescatalog --region $AWS_REGION
 ```
 
@@ -285,7 +285,7 @@ Then create the notebook instance:
 | Step | Action | Validates |
 |---|---|---|
 | 1 | Connect to S3 Tables via PyIceberg REST catalog | SigV4 auth, catalog discovery |
-| 2 | Read `customers` table (created by Athena in 1.3) | Cross-engine read (Athena → PyIceberg) |
+| 2 | Read `customers` table (created by Athena in 1.4) | Cross-engine read (Athena → PyIceberg) |
 | 3 | Write 2 rows from PyIceberg | Cross-engine write (PyIceberg → verify via Athena) |
 | 4 | Create `events` table with day-level partitioning | Table creation via REST endpoint |
 | 5 | Generate and load 50,000 synthetic event records | Batch ingestion (5 batches of 10K) |
@@ -307,6 +307,11 @@ GROUP BY event_type ORDER BY cnt DESC
 ## Phase 2: Stream Ingestion
 
 This phase validates real-time data ingestion via Amazon Data Firehose writing directly to S3 Tables in Iceberg format.
+
+```bash
+# Ensure ACCOUNT_ID is set (also set in Phase 1.1)
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+```
 
 ### 2.1 Create Firehose Stream
 
@@ -337,9 +342,14 @@ aws firehose create-delivery-stream \
 Wait for the stream to become active:
 
 ```bash
-aws firehose describe-delivery-stream \
-  --delivery-stream-name $STREAM_NAME --region $AWS_REGION \
-  --query 'DeliveryStreamDescription.DeliveryStreamStatus'
+while true; do
+  STATUS=$(aws firehose describe-delivery-stream \
+    --delivery-stream-name $STREAM_NAME --region $AWS_REGION \
+    --query 'DeliveryStreamDescription.DeliveryStreamStatus' --output text)
+  echo "Stream status: $STATUS"
+  [ "$STATUS" = "ACTIVE" ] && break
+  sleep 10
+done
 ```
 
 ### 2.2 Send Test Records
@@ -517,17 +527,19 @@ S3 Tables runs maintenance jobs asynchronously — compaction, snapshot expiry, 
 
 Remove all resources in reverse dependency order.
 
-> **Why CLI + CloudFormation?** The CloudFormation stack only manages the table bucket, Athena workgroup, IAM role, and S3 buckets. Resources created via CLI during the PoC (Firehose stream, tables, namespace, bucket policy, Glue catalog, Athena data source) live outside the stack and must be deleted via CLI first. Additionally, CloudFormation cannot delete non-empty S3 buckets, so the Athena results and Firehose backup buckets must be emptied before stack deletion.
+> **Why CLI + CloudFormation?** The CloudFormation stack only manages the table bucket, Athena workgroup, IAM role, and S3 buckets. Resources created via CLI during the PoC (Firehose stream, tables, namespace, Glue catalog, Athena data source) live outside the stack and must be deleted via CLI first. Additionally, CloudFormation cannot delete non-empty S3 buckets, so the Athena results and Firehose backup buckets must be emptied before stack deletion.
+
+> **Note**: If running cleanup in a new terminal session, re-run Step 3 first to set the environment variables (`$STACK_NAME`, `$TableBucketARN`, etc.).
 
 ```bash
-# 0. Delete SageMaker notebook (if created in Phase 1.4 Option A)
+# 0. Delete SageMaker notebook (if created in Phase 1.5 Option A)
 aws sagemaker stop-notebook-instance --notebook-instance-name s3-tables-poc --region $AWS_REGION 2>/dev/null
 aws sagemaker wait notebook-instance-stopped --notebook-instance-name s3-tables-poc --region $AWS_REGION 2>/dev/null
 aws sagemaker delete-notebook-instance --notebook-instance-name s3-tables-poc --region $AWS_REGION 2>/dev/null
 aws iam delete-role-policy --role-name ${STACK_NAME}-notebook-role --policy-name S3TablesNotebookAccess 2>/dev/null
 aws iam delete-role --role-name ${STACK_NAME}-notebook-role 2>/dev/null
 
-# 1. Delete Firehose stream (must be removed before table bucket policy)
+# 1. Delete Firehose stream
 aws firehose delete-delivery-stream \
   --delivery-stream-name $STREAM_NAME --region $AWS_REGION 2>/dev/null
 
@@ -542,23 +554,23 @@ done
 aws s3tables delete-namespace --table-bucket-arn $TableBucketARN \
   --namespace poc_data --region $AWS_REGION
 
-# 5. Delete Athena data source registration
+# 4. Delete Athena data source registration
 aws athena delete-data-catalog --name $TableBucketName --region $AWS_REGION 2>/dev/null
 
-# 6. Delete Glue catalog (skip if shared with other projects)
+# 5. Delete Glue catalog (skip if shared with other projects)
 aws glue delete-catalog --catalog-id s3tablescatalog --region $AWS_REGION
 
-# 7. Empty S3 buckets (CloudFormation cannot delete non-empty buckets)
+# 6. Empty S3 buckets (CloudFormation cannot delete non-empty buckets)
 ATHENA_BUCKET=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $AWS_REGION \
   --query 'Stacks[0].Outputs[?OutputKey==`AthenaResultsBucketName`].OutputValue' --output text)
 aws s3 rm s3://${ATHENA_BUCKET} --recursive --region $AWS_REGION 2>/dev/null
 aws s3 rm s3://${FirehoseBackupBucketName} --recursive --region $AWS_REGION 2>/dev/null
 
-# 8. Delete Athena workgroup (must be empty before CloudFormation can delete it)
+# 7. Delete Athena workgroup (must be empty before CloudFormation can delete it)
 aws athena delete-work-group --work-group ${STACK_NAME}-workgroup \
   --recursive-delete-option --region $AWS_REGION 2>/dev/null
 
-# 9. Delete CloudFormation stack (removes table bucket, IAM roles, S3 buckets)
+# 8. Delete CloudFormation stack (removes table bucket, IAM roles, S3 buckets)
 aws cloudformation delete-stack --stack-name $STACK_NAME --region $AWS_REGION
 aws cloudformation wait stack-delete-complete --stack-name $STACK_NAME --region $AWS_REGION
 ```
