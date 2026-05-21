@@ -100,7 +100,14 @@ STREAM_NAME="${STACK_NAME}-stream"
 
 ## Phase 1: Foundation
 
-This phase sets up the catalog integration and validates basic CRUD operations.
+This phase sets up the catalog integration between S3 Tables and Athena, then validates basic CRUD operations. By the end, you'll have a working table that both Athena and PyIceberg can read and write — proving multi-engine interoperability.
+
+**What you'll do:**
+1. Create a Glue federated catalog (connects S3 Tables to Athena)
+2. Create a namespace (logical grouping for tables)
+3. Verify the setup in the AWS Console
+4. Run CRUD operations via Athena
+5. Run a notebook for multi-engine batch testing
 
 ### 1.1 Create Glue Federated Catalog
 
@@ -162,7 +169,17 @@ aws s3tables create-namespace \
   --namespace poc_data --region $AWS_REGION
 ```
 
-### 1.3 Basic CRUD via Athena
+### 1.3 Verify in the Console
+
+Before running queries, confirm the resources are visible in the AWS Console:
+
+1. Sign in to the [AWS Console](https://console.aws.amazon.com/) (if not already)
+2. Navigate to [S3 → Table buckets](https://console.aws.amazon.com/s3/home#/table-buckets) — you should see `s3-tables-poc-<account-id>`
+3. Click into the table bucket → confirm the `poc_data` namespace appears
+
+This confirms the CLI-created resources are accessible via the console. You'll use the console for Athena queries next.
+
+### 1.4 Basic CRUD via Athena
 
 This validates that Athena can create, read, update, and delete data in S3 Tables — confirming the catalog integration works end-to-end.
 
@@ -213,7 +230,7 @@ UPDATE customers SET name = 'Alice Updated' WHERE id = 1
 DELETE FROM customers WHERE id = 3
 ```
 
-### 1.4 Multi-Engine Access + Batch Load (Notebook)
+### 1.5 Multi-Engine Access + Batch Load (Notebook)
 
 This step validates that PyIceberg can read/write the same tables Athena uses — confirming true multi-engine interoperability via the S3 Tables REST endpoint.
 
@@ -252,9 +269,14 @@ Then create the notebook instance:
 
 **Option B: Local IDE (VS Code, PyCharm, JupyterLab)**
 
-1. Open `assets/code/s3_tables_poc.ipynb` in your preferred environment
-2. Install dependencies: `pip install "pyiceberg[s3,pyarrow]" boto3 pyarrow pandas`
-3. Ensure AWS credentials are active (`aws sts get-caller-identity` should return your account)
+1. Ensure AWS credentials are configured. The notebook uses `boto3` which checks credentials in this order:
+   - Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
+   - AWS CLI profile (`aws configure` or `~/.aws/credentials`)
+   - IAM Identity Center SSO (`aws sso login --profile <profile>`)
+
+   Verify with: `aws sts get-caller-identity` — should return your account ID.
+2. Open `assets/code/s3_tables_poc.ipynb` in your preferred environment
+3. Install dependencies: `pip install "pyiceberg[s3,pyarrow]" boto3 pyarrow pandas`
 4. Update the `AWS_REGION` and `STACK_NAME` variables in the first code cell
 5. **Run All Cells**
 
