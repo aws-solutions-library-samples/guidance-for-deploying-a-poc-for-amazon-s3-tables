@@ -76,54 +76,59 @@ Resources:
             Condition:
               StringEquals:
                 sts:ExternalId: !Ref AWS::AccountId
-      Policies:
-        - PolicyName: FirehoseS3TablesAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Sid: S3TablesWrite
-                Effect: Allow
-                Action:
-                  - s3tables:GetTableData
-                  - s3tables:PutTableData
-                  - s3tables:GetTable
-                  - s3tables:GetTableMetadataLocation
-                  - s3tables:UpdateTableMetadataLocation
-                  - s3tables:GetNamespace
-                  - s3tables:GetTableBucket
-                Resource:
-                  - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${AWS::StackName}-${AWS::AccountId}"
-                  - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${AWS::StackName}-${AWS::AccountId}/*"
-              - Sid: GlueCatalogAccess
-                Effect: Allow
-                Action:
-                  - glue:GetTable
-                  - glue:GetDatabase
-                  - glue:GetDatabases
-                  - glue:GetCatalog
-                  - glue:GetPartitions
-                  - glue:BatchGetPartition
-                  - glue:UpdateTable
-                  - lakeformation:GetDataAccess
-                Resource: "*"
-              - Sid: FirehoseBackupBucket
-                Effect: Allow
-                Action:
-                  - s3:PutObject
-                  - s3:GetObject
-                  - s3:ListBucket
-                  - s3:GetBucketLocation
-                  - s3:AbortMultipartUpload
-                Resource:
-                  - !GetAtt FirehoseBackupBucket.Arn
-                  - !Sub "${FirehoseBackupBucket.Arn}/*"
-              - Sid: CloudWatchLogs
-                Effect: Allow
-                Action:
-                  - logs:PutLogEvents
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/firehose/${AWS::StackName}-stream:*"
+      ManagedPolicyArns:
+        - !Ref FirehosePolicy
+
+  FirehosePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-firehose-policy"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: S3TablesWrite
+            Effect: Allow
+            Action:
+              - s3tables:GetTableData
+              - s3tables:PutTableData
+              - s3tables:GetTable
+              - s3tables:GetTableMetadataLocation
+              - s3tables:UpdateTableMetadataLocation
+              - s3tables:GetNamespace
+              - s3tables:GetTableBucket
+            Resource:
+              - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${AWS::StackName}-${AWS::AccountId}"
+              - !Sub "arn:aws:s3tables:${AWS::Region}:${AWS::AccountId}:bucket/${AWS::StackName}-${AWS::AccountId}/*"
+          - Sid: GlueCatalogAccess
+            Effect: Allow
+            Action:
+              - glue:GetTable
+              - glue:GetDatabase
+              - glue:GetDatabases
+              - glue:GetCatalog
+              - glue:GetPartitions
+              - glue:BatchGetPartition
+              - glue:UpdateTable
+              - lakeformation:GetDataAccess
+            Resource: "*"
+          - Sid: FirehoseBackupBucket
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+              - s3:AbortMultipartUpload
+            Resource:
+              - !GetAtt FirehoseBackupBucket.Arn
+              - !Sub "${FirehoseBackupBucket.Arn}/*"
+          - Sid: CloudWatchLogs
+            Effect: Allow
+            Action:
+              - logs:PutLogEvents
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+            Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/firehose/${AWS::StackName}-stream:*"
 
 Outputs:
   TableBucketARN:
