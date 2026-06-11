@@ -532,7 +532,7 @@ Remove all resources in reverse dependency order.
 > **Note**: If running cleanup in a new terminal session, re-run Step 3 first to set the environment variables (`$STACK_NAME`, `$TableBucketARN`, etc.).
 
 ```bash
-# 0. Delete SageMaker notebook (if created in Phase 1.5 Option A)
+# 0. Delete SageMaker notebook - if created in Phase 1.5 Option A
 aws sagemaker stop-notebook-instance --notebook-instance-name s3-tables-poc --region $AWS_REGION 2>/dev/null
 aws sagemaker wait notebook-instance-stopped --notebook-instance-name s3-tables-poc --region $AWS_REGION 2>/dev/null
 aws sagemaker delete-notebook-instance --notebook-instance-name s3-tables-poc --region $AWS_REGION 2>/dev/null
@@ -543,7 +543,7 @@ aws iam delete-role --role-name ${STACK_NAME}-notebook-role 2>/dev/null
 aws firehose delete-delivery-stream \
   --delivery-stream-name $STREAM_NAME --region $AWS_REGION 2>/dev/null
 
-# 2. Delete all tables (required before namespace/bucket can be deleted)
+# 2. Delete all tables - required before namespace/bucket can be deleted
 for TABLE in $(aws s3tables list-tables --table-bucket-arn $TableBucketARN \
   --namespace poc_data --query 'tables[].name' --output text --region $AWS_REGION); do
   aws s3tables delete-table --table-bucket-arn $TableBucketARN \
@@ -557,20 +557,20 @@ aws s3tables delete-namespace --table-bucket-arn $TableBucketARN \
 # 4. Delete Athena data source registration
 aws athena delete-data-catalog --name $TableBucketName --region $AWS_REGION 2>/dev/null
 
-# 5. Delete Glue catalog (skip if shared with other projects)
+# 5. Delete Glue catalog - skip if shared with other projects
 aws glue delete-catalog --catalog-id s3tablescatalog --region $AWS_REGION
 
-# 6. Empty S3 buckets (CloudFormation cannot delete non-empty buckets)
+# 6. Empty S3 buckets - CloudFormation cannot delete non-empty buckets
 ATHENA_BUCKET=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $AWS_REGION \
   --query 'Stacks[0].Outputs[?OutputKey==`AthenaResultsBucketName`].OutputValue' --output text)
 aws s3 rm s3://${ATHENA_BUCKET} --recursive --region $AWS_REGION 2>/dev/null
 aws s3 rm s3://${FirehoseBackupBucketName} --recursive --region $AWS_REGION 2>/dev/null
 
-# 7. Delete Athena workgroup (must be empty before CloudFormation can delete it)
+# 7. Delete Athena workgroup - must be empty before CloudFormation can delete it
 aws athena delete-work-group --work-group ${STACK_NAME}-workgroup \
   --recursive-delete-option --region $AWS_REGION 2>/dev/null
 
-# 8. Delete CloudFormation stack (removes table bucket, IAM roles, S3 buckets)
+# 8. Delete CloudFormation stack - removes table bucket, IAM roles, S3 buckets
 aws cloudformation delete-stack --stack-name $STACK_NAME --region $AWS_REGION
 aws cloudformation wait stack-delete-complete --stack-name $STACK_NAME --region $AWS_REGION
 ```
