@@ -527,6 +527,24 @@ S3 Tables runs maintenance jobs asynchronously — compaction, snapshot expiry, 
 
 ---
 
+## AI-Assisted Development with the AWS MCP Server
+
+The [AWS MCP Server](https://aws.amazon.com/blogs/aws/the-aws-mcp-server-is-now-generally-available/) provides AI coding agents with authenticated access to AWS APIs, current documentation, and curated best-practice skills. Instead of manually running CLI commands, you can use an MCP-compatible agent (Kiro, Claude Code, Cursor, etc.) to create and manage S3 Tables resources interactively.
+
+The [Agent Toolkit for AWS](https://github.com/aws/agent-toolkit-for-aws) includes **specialist storage skills** that are directly relevant to this PoC:
+
+| Skill | What It Does |
+|---|---|
+| [creating-data-lake-table](https://github.com/aws/agent-toolkit-for-aws/tree/main/skills/specialized-skills/storage-skills/creating-data-lake-table) | Guides agents through creating S3 Tables (table bucket, namespace, Glue catalog, schema, partitioning, IAM access control) |
+| [troubleshooting-s3-files](https://github.com/aws/agent-toolkit-for-aws/tree/main/skills/specialized-skills/storage-skills/troubleshooting-s3-files) | Diagnoses S3 access and permission issues |
+| [storing-and-querying-vectors](https://github.com/aws/agent-toolkit-for-aws/tree/main/skills/specialized-skills/storage-skills/storing-and-querying-vectors) | Manages vector storage on S3 (a complementary data lake pattern) |
+
+The `creating-data-lake-table` skill covers the same workflow as Phase 1 of this PoC — creating table buckets, namespaces, Glue catalog integration, and access control — with validated best practices for schema design, partition strategies, and IAM scoping.
+
+To get started, configure the AWS MCP Server with your agent using the [MCP Proxy for AWS](https://github.com/aws/mcp-proxy-for-aws) and your existing IAM credentials.
+
+---
+
 ## Cleanup
 
 Remove all resources in reverse dependency order.
