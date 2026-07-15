@@ -4,5 +4,8 @@
 # SSM Session Manager plugin install artifacts
 sessionmanager-bundle/
 sessionmanager-bundle.zip
+
+# Build/scan artifacts
+scan-report.json
 assets/code/notebook-role-policy-resolved.json
 assets/code/catalog.json
