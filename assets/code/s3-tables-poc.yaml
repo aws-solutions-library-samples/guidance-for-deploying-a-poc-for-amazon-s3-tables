@@ -13,6 +13,9 @@ Resources:
   # ============ ATHENA ============
 
   AthenaResultsBucket:
+    # Scan suppression: Access logging, versioning, and ObjectLock intentionally omitted.
+    # This is a short-lived PoC bucket for ephemeral Athena query results.
+    # PublicReadWrite ACL finding is a false positive — no ACL set; PublicAccessBlockConfiguration denies all public access.
     Type: AWS::S3::Bucket
     Properties:
       BucketEncryption:
@@ -37,12 +40,17 @@ Resources:
       WorkGroupConfiguration:
         ResultConfiguration:
           OutputLocation: !Sub "s3://${AthenaResultsBucket}/results/"
-        EnforceWorkGroupConfiguration: false
+          EncryptionConfiguration:
+            EncryptionOption: SSE_S3
+        EnforceWorkGroupConfiguration: true
         PublishCloudWatchMetricsEnabled: true
 
   # ============ FIREHOSE SUPPORT ============
 
   FirehoseBackupBucket:
+    # Scan suppression: Access logging, versioning, and ObjectLock intentionally omitted.
+    # This is a short-lived PoC bucket with 7-day lifecycle expiration for Firehose failed records.
+    # PublicReadWrite ACL finding is a false positive — no ACL set; PublicAccessBlockConfiguration denies all public access.
     Type: AWS::S3::Bucket
     Properties:
       BucketEncryption:
@@ -109,6 +117,15 @@ Resources:
               - glue:GetPartitions
               - glue:BatchGetPartition
               - glue:UpdateTable
+            Resource:
+              - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+              - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog/*"
+              - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/*"
+              - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/*"
+          - Sid: LakeFormationAccess
+            # lakeformation:GetDataAccess does not support resource-level permissions
+            Effect: Allow
+            Action:
               - lakeformation:GetDataAccess
             Resource: "*"
           - Sid: FirehoseBackupBucket
