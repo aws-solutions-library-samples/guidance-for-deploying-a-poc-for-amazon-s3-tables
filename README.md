@@ -2,6 +2,10 @@
 
 Amazon S3 Tables provide fully managed Apache Iceberg tables with automatic compaction, snapshot management, and garbage collection. This PoC validates the end-to-end workflow: table creation, multi-engine access (Athena + PyIceberg), streaming ingestion (Firehose), and table administration.
 
+## Architecture
+
+![Architecture Diagram](assets/images/s3tablespoc-architecture-diagram.png)
+
 ---
 
 ## What This Deploys
