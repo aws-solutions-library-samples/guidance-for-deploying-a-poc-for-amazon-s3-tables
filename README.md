@@ -1,6 +1,6 @@
 # Guidance for Deploying a PoC for Amazon S3 Tables
 
-Amazon S3 Tables provide fully managed Apache Iceberg tables with automatic compaction, snapshot management, and garbage collection. This PoC validates the end-to-end workflow: table creation, multi-engine access (Athena + PyIceberg), streaming ingestion (Firehose), and table administration.
+This Guidance helps organizations validate a fully managed Apache Iceberg table workflow on Amazon S3 Tables by deploying a proof of concept that covers table creation, multi-engine querying, and streaming ingestion. The proof of concept connects core AWS services — including Athena, AWS Glue Data Catalog, and Amazon Data Firehose — to demonstrate how S3 Tables automatically handle compaction, snapshot management, and garbage collection without manual intervention. Private connectivity is maintained throughout, with all traffic routed securely through VPC endpoints to services such as S3, Glue, and Athena, eliminating the need for an internet gateway. You can accelerate your adoption of a modern, low-maintenance data lakehouse by validating real-world ingestion, querying, and table administration patterns before committing to a full-scale deployment.
 
 ## Architecture
 
