@@ -33,7 +33,7 @@ This Guidance helps organizations validate a fully managed Apache Iceberg table 
 
 ### Cost
 
-You are responsible for the cost of the AWS services used while running this Guidance. As of August 2025, the cost for running this Guidance with the default settings in the US East (N. Virginia) Region is approximately **$4.80 per month** for a continuously running proof of concept (pay-per-use only — no idle compute charges).
+You are responsible for the cost of the AWS services used while running this Guidance. As of August 2026, the cost for running this Guidance with the default settings in the US East (N. Virginia) Region is approximately **$4.80 per month** for a continuously running proof of concept (pay-per-use only — no idle compute charges).
 
 We recommend creating a [Budget](https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-managing-costs.html) through [AWS Cost Explorer](https://aws.amazon.com/aws-cost-management/aws-cost-explorer/) to help manage costs. Prices are subject to change. For full details, refer to the pricing webpage for each AWS service used in this Guidance.
 
