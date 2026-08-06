@@ -1,26 +1,84 @@
 # Guidance for Deploying a PoC for Amazon S3 Tables
 
-This Guidance helps organizations validate a fully managed Apache Iceberg table workflow on Amazon S3 Tables by deploying a proof of concept that covers table creation, multi-engine querying, and streaming ingestion. The proof of concept connects core AWS services — including Athena, AWS Glue Data Catalog, and Amazon Data Firehose — to demonstrate how S3 Tables automatically handle compaction, snapshot management, and garbage collection without manual intervention. Private connectivity is maintained throughout, with all traffic routed securely through VPC endpoints to services such as S3, Glue, and Athena, eliminating the need for an internet gateway. You can accelerate your adoption of a modern, low-maintenance data lakehouse by validating real-world ingestion, querying, and table administration patterns before committing to a full-scale deployment.
+## Table of Contents
 
-## Architecture
+1. [Overview](#overview)
+    - [Cost](#cost)
+2. [Prerequisites](#prerequisites)
+    - [Operating System](#operating-system)
+    - [AWS Account Requirements](#aws-account-requirements)
+    - [IAM Permissions](#iam-permissions)
+    - [Supported Regions](#supported-regions)
+3. [Deployment Steps](#deployment-steps)
+4. [Deployment Validation](#deployment-validation)
+5. [Running the Guidance](#running-the-guidance)
+    - [Phase 1: Foundation](#phase-1-foundation)
+    - [Phase 2: Stream Ingestion](#phase-2-stream-ingestion)
+    - [Phase 3: Observability](#phase-3-observability)
+    - [Phase 4: Administration](#phase-4-administration)
+6. [Next Steps](#next-steps)
+7. [Cleanup](#cleanup)
+8. [FAQ, Known Issues, and Additional Considerations](#faq-known-issues-and-additional-considerations)
+9. [Notices](#notices)
+
+---
+
+## Overview
+
+This Guidance helps organizations validate a fully managed Apache Iceberg table workflow on Amazon S3 Tables by deploying a proof of concept that covers table creation, multi-engine querying, and streaming ingestion. The proof of concept connects core AWS services — including Amazon Athena, AWS Glue Data Catalog, and Amazon Data Firehose — to demonstrate how S3 Tables automatically handle compaction, snapshot management, and garbage collection without manual intervention. Private connectivity is maintained throughout, with all traffic routed securely through VPC endpoints to services such as S3, Glue, and Athena, eliminating the need for an internet gateway. You can accelerate your adoption of a modern, low-maintenance data lakehouse by validating real-world ingestion, querying, and table administration patterns before committing to a full-scale deployment.
+
+### Architecture
 
 ![Architecture Diagram](assets/images/s3tablespoc-architecture-diagram.png)
 
----
+### Cost
 
-## What This Deploys
+You are responsible for the cost of the AWS services used while running this Guidance. As of August 2025, the cost for running this Guidance with the default settings in the US East (N. Virginia) Region is approximately **$4.80 per month** for a continuously running proof of concept (pay-per-use only — no idle compute charges).
 
-| Resource | Purpose | Daily Cost |
+We recommend creating a [Budget](https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-managing-costs.html) through [AWS Cost Explorer](https://aws.amazon.com/aws-cost-management/aws-cost-explorer/) to help manage costs. Prices are subject to change. For full details, refer to the pricing webpage for each AWS service used in this Guidance.
+
+#### Sample Cost Table
+
+The following table provides a sample cost breakdown for deploying this Guidance with the default parameters in the US East (N. Virginia) Region for one month.
+
+| AWS Service | Dimensions | Cost [USD] |
 |---|---|---|
-| S3 Table Bucket | Managed Iceberg table storage with automatic maintenance | ~$0.10 |
-| Athena Workgroup + Results Bucket | Serverless SQL queries with a dedicated results location | ~$0.05 |
-| Firehose IAM Role + Backup Bucket | Pre-configured role for streaming ingestion; backup bucket for failed records | ~$0.01 |
+| Amazon S3 Tables (Table Bucket) | Managed Iceberg table storage with automatic maintenance | ~$3.00 |
+| Amazon Athena (Workgroup + Results Bucket) | Serverless SQL queries with a dedicated results location | ~$1.50 |
+| Amazon Data Firehose (IAM Role + Backup Bucket) | Pre-configured role for streaming ingestion; backup bucket for failed records | ~$0.30 |
+| **Total** | | **~$4.80/month** |
 
-**Total**: ~$0.16/day (pay-per-use only — no idle compute)
+> Costs are estimates based on light PoC usage. Actual costs depend on data volume and query frequency.
 
 ---
 
-## IAM Permissions
+## Prerequisites
+
+### Operating System
+
+These deployment instructions are optimized to work on **macOS, Linux, or Windows (WSL2)**. All AWS CLI commands are POSIX/bash compatible.
+
+**Required tools:**
+
+| Tool | Version | Install |
+|---|---|---|
+| AWS CLI | v2.x | [Install guide](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html) |
+| Python | 3.9+ | [python.org](https://www.python.org/downloads/) |
+| pip | latest | Included with Python |
+
+For the PyIceberg notebook (Phase 1.5 Option B — local IDE), install the following packages:
+
+```bash
+pip install "pyiceberg[s3,pyarrow]" boto3 pyarrow pandas
+```
+
+### AWS Account Requirements
+
+- An active AWS account with programmatic access configured (`aws configure` or equivalent)
+- AWS CLI credentials with the IAM permissions listed below
+- Amazon S3 Tables is not available in all Regions — see [Supported Regions](#supported-regions)
+
+### IAM Permissions
 
 The user or role running this PoC needs the following permissions. The CloudFormation stack creates a dedicated Firehose role — these are for **your** IAM principal (the person running the CLI commands and notebook).
 
@@ -43,66 +101,96 @@ The user or role running this PoC needs the following permissions. The CloudForm
 
 > **Minimal policy for the notebook**: If running the PyIceberg notebook with a separate role, see `assets/code/notebook-role-policy.json` for the full policy (S3 Tables, Athena, Glue, Lake Formation, CloudFormation, CloudWatch, and STS permissions).
 
----
+### Supported Regions
 
-## Quick Start
-
-### Step 1: Clone the Repo
-
-```bash
-git clone https://github.com/aws-solutions-library-samples/guidance-for-deploying-a-poc-for-amazon-s3-tables.git
-cd guidance-for-deploying-a-poc-for-amazon-s3-tables
-export AWS_REGION="us-east-1"
-```
-
-### Step 2: Deploy the Stack
-
-The CloudFormation stack creates the table bucket, Athena workgroup, and Firehose support resources:
-
-```bash
-aws cloudformation deploy \
-  --template-file assets/code/s3-tables-poc.yaml \
-  --stack-name s3-tables-poc \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --region $AWS_REGION
-```
-
-> `CAPABILITY_NAMED_IAM` is required because the stack creates an IAM role for Firehose.
-
-### Step 3: Capture Stack Outputs
-
-These environment variables are used throughout the remaining steps:
-
-```bash
-STACK_NAME="s3-tables-poc"
-
-TableBucketARN=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $AWS_REGION \
-  --query 'Stacks[0].Outputs[?OutputKey==`TableBucketARN`].OutputValue' --output text)
-
-TableBucketName=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $AWS_REGION \
-  --query 'Stacks[0].Outputs[?OutputKey==`TableBucketName`].OutputValue' --output text)
-
-AthenaWorkgroupName=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $AWS_REGION \
-  --query 'Stacks[0].Outputs[?OutputKey==`AthenaWorkgroupName`].OutputValue' --output text)
-
-FirehoseRoleArn=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $AWS_REGION \
-  --query 'Stacks[0].Outputs[?OutputKey==`FirehoseRoleArn`].OutputValue' --output text)
-
-FirehoseBackupBucketName=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $AWS_REGION \
-  --query 'Stacks[0].Outputs[?OutputKey==`FirehoseBackupBucketName`].OutputValue' --output text)
-
-echo "Table Bucket ARN:  $TableBucketARN"
-echo "Table Bucket Name: $TableBucketName"
-echo "Athena Workgroup:  $AthenaWorkgroupName"
-echo "Firehose Role:     $FirehoseRoleArn"
-echo "Backup Bucket:     $FirehoseBackupBucketName"
-
-STREAM_NAME="${STACK_NAME}-stream"
-```
+Amazon S3 Tables is available in a subset of AWS Regions. This Guidance is optimized for **US East (N. Virginia) — `us-east-1`**. Before deploying to another Region, verify that S3 Tables is supported in that Region using the [AWS Regional Services List](https://aws.amazon.com/about-aws/global-infrastructure/regional-product-services/).
 
 ---
 
-## Phase 1: Foundation
+## Deployment Steps
+
+1. **Clone the repository:**
+
+    ```bash
+    git clone https://github.com/aws-solutions-library-samples/guidance-for-deploying-a-poc-for-amazon-s3-tables.git
+    cd guidance-for-deploying-a-poc-for-amazon-s3-tables
+    export AWS_REGION="us-east-1"
+    ```
+
+2. **Deploy the CloudFormation stack:**
+
+    The stack creates the table bucket, Athena workgroup, and Firehose support resources:
+
+    ```bash
+    aws cloudformation deploy \
+      --template-file assets/code/s3-tables-poc.yaml \
+      --stack-name s3-tables-poc \
+      --capabilities CAPABILITY_NAMED_IAM \
+      --region $AWS_REGION
+    ```
+
+    > `CAPABILITY_NAMED_IAM` is required because the stack creates an IAM role for Firehose.
+
+3. **Capture stack outputs:**
+
+    These environment variables are used throughout the remaining steps:
+
+    ```bash
+    STACK_NAME="s3-tables-poc"
+
+    TableBucketARN=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $AWS_REGION \
+      --query 'Stacks[0].Outputs[?OutputKey==`TableBucketARN`].OutputValue' --output text)
+
+    TableBucketName=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $AWS_REGION \
+      --query 'Stacks[0].Outputs[?OutputKey==`TableBucketName`].OutputValue' --output text)
+
+    AthenaWorkgroupName=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $AWS_REGION \
+      --query 'Stacks[0].Outputs[?OutputKey==`AthenaWorkgroupName`].OutputValue' --output text)
+
+    FirehoseRoleArn=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $AWS_REGION \
+      --query 'Stacks[0].Outputs[?OutputKey==`FirehoseRoleArn`].OutputValue' --output text)
+
+    FirehoseBackupBucketName=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $AWS_REGION \
+      --query 'Stacks[0].Outputs[?OutputKey==`FirehoseBackupBucketName`].OutputValue' --output text)
+
+    echo "Table Bucket ARN:  $TableBucketARN"
+    echo "Table Bucket Name: $TableBucketName"
+    echo "Athena Workgroup:  $AthenaWorkgroupName"
+    echo "Firehose Role:     $FirehoseRoleArn"
+    echo "Backup Bucket:     $FirehoseBackupBucketName"
+
+    STREAM_NAME="${STACK_NAME}-stream"
+    ```
+
+---
+
+## Deployment Validation
+
+Confirm the stack deployed successfully before proceeding:
+
+1. **Check CloudFormation stack status:**
+
+    ```bash
+    aws cloudformation describe-stacks \
+      --stack-name s3-tables-poc \
+      --region $AWS_REGION \
+      --query 'Stacks[0].StackStatus' --output text
+    ```
+
+    Expected output: `CREATE_COMPLETE`
+
+2. **Verify resources in the AWS Console:**
+    - Open the [CloudFormation console](https://console.aws.amazon.com/cloudformation) and confirm the stack `s3-tables-poc` has status **CREATE_COMPLETE**
+    - Navigate to [S3 → Table buckets](https://console.aws.amazon.com/s3/home#/table-buckets) — you should see a table bucket named `s3-tables-poc-<account-id>`
+    - Navigate to [Athena → Workgroups](https://console.aws.amazon.com/athena/home#/workgroups) — confirm the workgroup from `$AthenaWorkgroupName` is listed
+
+3. **Confirm all five output variables are populated** (non-empty) from Step 3 above. If any are blank, re-run the `describe-stacks` commands for the missing values.
+
+---
+
+## Running the Guidance
+
+### Phase 1: Foundation
 
 This phase sets up the catalog integration between S3 Tables and Athena, then validates basic CRUD operations. By the end, you'll have a working table that both Athena and PyIceberg can read and write — proving multi-engine interoperability.
 
@@ -113,7 +201,7 @@ This phase sets up the catalog integration between S3 Tables and Athena, then va
 4. Run CRUD operations via Athena
 5. Run a notebook for multi-engine batch testing
 
-### 1.1 Create Glue Federated Catalog
+#### 1.1 Create Glue Federated Catalog
 
 S3 Tables require a Glue federated catalog for Athena to discover and query tables. This creates the catalog with IAM-based access control (no Lake Formation admin required):
 
@@ -163,7 +251,7 @@ aws athena create-data-catalog \
 
 > If you get `AlreadyExistsException`, the catalog is already registered.
 
-### 1.2 Create Namespace
+#### 1.2 Create Namespace
 
 Namespaces are logical groupings within a table bucket (similar to databases). Create one for the PoC data:
 
@@ -173,7 +261,7 @@ aws s3tables create-namespace \
   --namespace poc_data --region $AWS_REGION
 ```
 
-### 1.3 Verify in the Console
+#### 1.3 Verify in the Console
 
 Before running queries, confirm the resources are visible in the AWS Console:
 
@@ -183,7 +271,7 @@ Before running queries, confirm the resources are visible in the AWS Console:
 
 This confirms the CLI-created resources are accessible via the console. You'll use the console for Athena queries next.
 
-### 1.4 Basic CRUD via Athena
+#### 1.4 Basic CRUD via Athena
 
 This validates that Athena can create, read, update, and delete data in S3 Tables — confirming the catalog integration works end-to-end.
 
@@ -234,7 +322,7 @@ UPDATE customers SET name = 'Alice Updated' WHERE id = 1
 DELETE FROM customers WHERE id = 3
 ```
 
-### 1.5 Multi-Engine Access + Batch Load (Notebook)
+#### 1.5 Multi-Engine Access + Batch Load (Notebook)
 
 This step validates that PyIceberg can read/write the same tables Athena uses — confirming true multi-engine interoperability via the S3 Tables REST endpoint.
 
@@ -308,7 +396,7 @@ GROUP BY event_type ORDER BY cnt DESC
 
 ---
 
-## Phase 2: Stream Ingestion
+### Phase 2: Stream Ingestion
 
 This phase validates real-time data ingestion via Amazon Data Firehose writing directly to S3 Tables in Iceberg format.
 
@@ -317,7 +405,7 @@ This phase validates real-time data ingestion via Amazon Data Firehose writing d
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 ```
 
-### 2.1 Create Firehose Stream
+#### 2.1 Create Firehose Stream
 
 Create a delivery stream that writes JSON records directly to the `events` Iceberg table. The `CatalogARN` must reference the bucket-level sub-catalog:
 
@@ -356,7 +444,7 @@ while true; do
 done
 ```
 
-### 2.2 Send Test Records
+#### 2.2 Send Test Records
 
 Send 50 sample events spread across the past 24 hours to validate the end-to-end streaming path:
 
@@ -371,7 +459,7 @@ for i in $(seq 1 50); do
 done
 ```
 
-### 2.3 Verify Stream Ingestion
+#### 2.3 Verify Stream Ingestion
 
 Wait 1–2 minutes for Firehose to buffer and commit, then run these queries in the Athena console (with your `$TableBucketName` data source and `poc_data` database selected):
 
@@ -411,13 +499,13 @@ ORDER BY cnt DESC
 
 ---
 
-## Phase 3: Observability
+### Phase 3: Observability
 
 S3 Tables automatically runs maintenance jobs (compaction, snapshot management). This phase shows how to monitor them.
 
-### 3.1 Table Maintenance Status
+#### 3.1 Table Maintenance Status
 
-> **Note**: If you just deployed the PoC, maintenance jobs will show a status of `Not_Yet_Run`. S3 Tables triggers maintenance asynchronously — compaction typically runs within 1 hour of data being written. This is expected; check back later using the Follow-On Validation schedule below.
+> **Note**: If you just deployed the PoC, maintenance jobs will show a status of `Not_Yet_Run`. S3 Tables triggers maintenance asynchronously — compaction typically runs within 1 hour of data being written. This is expected; check back later using the Follow-On Validation schedule in the [Next Steps](#next-steps) section.
 
 1. Open the [S3 console](https://console.aws.amazon.com/s3/home) → **Table buckets**
 2. Select your table bucket → **Tables** → select `events`
@@ -431,7 +519,7 @@ aws s3tables get-table-maintenance-job-status \
   --namespace poc_data --name events --region $AWS_REGION
 ```
 
-### 3.2 CloudWatch Metrics
+#### 3.2 CloudWatch Metrics
 
 1. Open the [CloudWatch Metrics console](https://console.aws.amazon.com/cloudwatch/home#metricsV2)
 2. Search for namespace `AWS/S3Tables`
@@ -445,11 +533,11 @@ aws s3tables get-table-maintenance-job-status \
 
 ---
 
-## Phase 4: Administration
+### Phase 4: Administration
 
 These commands configure table maintenance policies and demonstrate Iceberg features.
 
-### 4.1 Schema Evolution
+#### 4.1 Schema Evolution
 
 Iceberg supports adding columns without rewriting data. Run in the Athena console (with your `$TableBucketName` data source and `poc_data` database selected):
 
@@ -459,7 +547,7 @@ ALTER TABLE customers ADD COLUMNS (phone STRING, tier STRING)
 
 > **Idempotency note**: If you get `Cannot add column, name already exists: phone`, the columns were already added in a previous run. This is safe to ignore — Iceberg does not support `IF NOT EXISTS` for `ADD COLUMNS`, so re-running this statement is expected to fail once the columns exist.
 
-### 4.2 Snapshot Management
+#### 4.2 Snapshot Management
 
 Control how many snapshots are retained and for how long. Expired snapshots are automatically cleaned up:
 
@@ -472,7 +560,7 @@ aws s3tables put-table-maintenance-configuration \
   --region $AWS_REGION
 ```
 
-### 4.3 Compaction Configuration
+#### 4.3 Compaction Configuration
 
 Compaction merges small files into larger ones for better query performance. S3 Tables runs this automatically — here you can tune the target file size:
 
@@ -485,7 +573,7 @@ aws s3tables put-table-maintenance-configuration \
   --region $AWS_REGION
 ```
 
-### 4.4 Intelligent-Tiering
+#### 4.4 Intelligent-Tiering
 
 Enable S3 Intelligent-Tiering on the table bucket to automatically move infrequently accessed data to lower-cost storage tiers:
 
@@ -496,7 +584,7 @@ aws s3tables put-table-bucket-storage-class \
   --region $AWS_REGION
 ```
 
-### 4.5 Time Travel
+#### 4.5 Time Travel
 
 Iceberg maintains snapshot history, allowing you to query data as it existed at a previous point in time. Run in the Athena console:
 
@@ -508,7 +596,9 @@ SELECT * FROM customers FOR TIMESTAMP AS OF TIMESTAMP '2026-05-06 06:00:00 UTC'
 
 ---
 
-## Follow-On Validation
+## Next Steps
+
+### Follow-On Validation
 
 S3 Tables runs maintenance jobs asynchronously — compaction, snapshot expiry, and tiering transitions happen in the background after data is written. Come back at these intervals to confirm they're working:
 
@@ -525,9 +615,7 @@ S3 Tables runs maintenance jobs asynchronously — compaction, snapshot expiry, 
 
 > **Tip**: If compaction hasn't run after 1 hour, your dataset may be too small to trigger it. Load more data via the notebook (increase `NUM_RECORDS` to 500K) or send more Firehose records.
 
----
-
-## AI-Assisted Development with the AWS MCP Server
+### AI-Assisted Development with the AWS MCP Server
 
 The [AWS MCP Server](https://aws.amazon.com/blogs/aws/the-aws-mcp-server-is-now-generally-available/) provides AI coding agents with authenticated access to AWS APIs, current documentation, and curated best-practice skills. Instead of manually running CLI commands, you can use an MCP-compatible agent (Kiro, Claude Code, Cursor, etc.) to create and manage S3 Tables resources interactively.
 
@@ -551,7 +639,7 @@ Remove all resources in reverse dependency order.
 
 > **Why CLI + CloudFormation?** The CloudFormation stack only manages the table bucket, Athena workgroup, IAM role, and S3 buckets. Resources created via CLI during the PoC (Firehose stream, tables, namespace, Glue catalog, Athena data source) live outside the stack and must be deleted via CLI first. Additionally, CloudFormation cannot delete non-empty S3 buckets, so the Athena results and Firehose backup buckets must be emptied before stack deletion.
 
-> **Note**: If running cleanup in a new terminal session, re-run Step 3 first to set the environment variables (`$STACK_NAME`, `$TableBucketARN`, etc.).
+> **Note**: If running cleanup in a new terminal session, re-run Step 3 of the [Deployment Steps](#deployment-steps) first to restore the environment variables (`$STACK_NAME`, `$TableBucketARN`, etc.).
 
 ```bash
 # 0. Delete SageMaker notebook - if created in Phase 1.5 Option A
@@ -598,3 +686,28 @@ aws cloudformation wait stack-delete-complete --stack-name $STACK_NAME --region 
 ```
 
 > **If stack deletion fails**: This usually means a resource still has dependencies (e.g., table bucket not fully empty, or a bucket with residual objects). Open the [CloudFormation console](https://console.aws.amazon.com/cloudformation), select the failed stack, click **Delete**, and check "Retain" for the blocking resource. Then manually delete that resource from its respective console (S3 or S3 Tables).
+
+---
+
+## FAQ, Known Issues, and Additional Considerations
+
+**Known issues**
+
+- **`AlreadyExistsException` on Glue catalog or Athena data source creation**: Safe to ignore if the resource was created in a previous run. Verify the existing resource is correctly configured using the `get-catalog` or `list-data-catalogs` commands.
+- **`Not_Yet_Run` maintenance status**: Expected immediately after deployment. S3 Tables triggers compaction asynchronously; check back after 1 hour. See the [Follow-On Validation](#follow-on-validation) schedule.
+- **`AWS/S3Tables` CloudWatch namespace not visible**: The namespace only appears after the first maintenance job runs. With small datasets this may take several hours.
+- **Firehose stream records not appearing in Athena**: Firehose buffers up to 60 seconds before committing. If records are still missing after 2 minutes, check the backup bucket: `aws s3 ls s3://$FirehoseBackupBucketName/ --recursive`
+
+**Additional considerations**
+
+- This Guidance creates an Amazon SageMaker notebook instance (Option A) that is billed per hour irrespective of usage. Stop the instance from the SageMaker console when not in use.
+- The Glue federated catalog (`s3tablescatalog`) created in Phase 1.1 is account-wide. If you have other S3 Tables projects using the same catalog name, skip the deletion step in Cleanup (Step 5) to avoid disrupting those workloads.
+- S3 Tables pricing is based on storage and requests. For large-scale production workloads, review the [S3 Tables pricing page](https://aws.amazon.com/s3/pricing/) before committing to a full deployment.
+
+For any feedback, questions, or suggestions, please use the issues tab under this repo.
+
+---
+
+## Notices
+
+Customers are responsible for making their own independent assessment of the information in this Guidance. This Guidance: (a) is for informational purposes only, (b) represents AWS current product offerings and practices, which are subject to change without notice, and (c) does not create any commitments or assurances from AWS and its affiliates, suppliers or licensors. AWS products or services are provided "as is" without warranties, representations, or conditions of any kind, whether express or implied. AWS responsibilities and liabilities to its customers are controlled by AWS agreements, and this Guidance is not part of, nor does it modify, any agreement between AWS and its customers.
