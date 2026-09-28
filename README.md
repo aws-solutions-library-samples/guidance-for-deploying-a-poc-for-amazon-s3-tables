@@ -69,7 +69,7 @@ These deployment instructions are optimized to work on **macOS, Linux, or Window
 For the PyIceberg notebook (Phase 1.5 Option B — local IDE), install the following packages:
 
 ```bash
-pip install "pyiceberg[s3,pyarrow]" boto3 pyarrow pandas
+pip install "pyiceberg[pyarrow,pyiceberg-core]" boto3 pandas
 ```
 
 ### AWS Account Requirements
@@ -368,7 +368,7 @@ Then create the notebook instance:
 
    Verify with: `aws sts get-caller-identity` — should return your account ID.
 2. Open `assets/code/s3_tables_poc.ipynb` in your preferred environment
-3. Install dependencies: `pip install "pyiceberg[s3,pyarrow]" boto3 pyarrow pandas`
+3. Install dependencies: `pip install "pyiceberg[pyarrow,pyiceberg-core]" boto3 pandas`
 4. Update the `AWS_REGION` and `STACK_NAME` variables in the first code cell
 5. **Run All Cells**
 
